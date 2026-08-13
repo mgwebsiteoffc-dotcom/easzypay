@@ -168,13 +168,16 @@ Route::post('/api/validate-discount', function (\Illuminate\Http\Request $reques
     }
 
     try {
+        $items = is_array($session?->items) ? $session->items : [];
         $shopify = new \App\Services\ShopifyService($store->myshopify_domain, $store->access_token);
-        $result = $shopify->lookupDiscountCode($code, (int) ($session->subtotal ?? 0));
+        $result = $shopify->lookupDiscountCode($code, (int) ($session->subtotal ?? 0), $items);
+
+        unset($result['handled']);
 
         if (!empty($result['valid']) && $session) {
             $session->update([
                 'discount_code'    => $code,
-                'discount_percent' => (int) ($result['discount_percent'] ?? 0),
+                'discount_percent' => (float) ($result['discount_percent'] ?? 0),
                 'discount_amount'  => (int) ($result['discount_amount'] ?? 0),
                 'total_amount'     => max(0, (int) ($session->subtotal ?? 0) - (int) ($result['discount_amount'] ?? 0)),
             ]);

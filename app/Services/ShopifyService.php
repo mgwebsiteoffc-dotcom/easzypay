@@ -149,13 +149,238 @@ class ShopifyService
         return $policies;
     }
 
-    public function lookupDiscountCode(string $code, int $subtotalCents): array
+    public function lookupDiscountCode(string $code, int $subtotalCents, array $items = []): array
     {
         $code = trim($code);
         if ($code === '') {
-            return ['valid' => false, 'error' => 'Empty code'];
+            return ['valid' => false, 'error' => 'Enter a discount code'];
         }
 
+        $graphql = $this->lookupDiscountViaGraphql($code, $subtotalCents, $items);
+        if (!empty($graphql['handled'])) {
+            return $graphql;
+        }
+
+        return $this->lookupDiscountViaRest($code, $subtotalCents, $items);
+    }
+
+    private function lookupDiscountViaGraphql(string $code, int $subtotalCents, array $items): array
+    {
+        $query = <<<'GQL'
+        query DiscountByCode($code: String!) {
+            codeDiscountNodeByCode(code: $code) {
+                id
+                codeDiscount {
+                    __typename
+                    ... on DiscountCodeBasic {
+                        title
+                        status
+                        startsAt
+                        endsAt
+                        usageLimit
+                        asyncUsageCount
+                        minimumRequirement {
+                            __typename
+                            ... on DiscountMinimumSubtotal {
+                                greaterThanOrEqualToSubtotal { amount }
+                            }
+                            ... on DiscountMinimumQuantity {
+                                greaterThanOrEqualToQuantity
+                            }
+                        }
+                        customerGets {
+                            value {
+                                __typename
+                                ... on DiscountPercentage { percentage }
+                                ... on DiscountAmount {
+                                    amount { amount }
+                                    appliesOnEachItem
+                                }
+                            }
+                            items {
+                                __typename
+                                ... on AllDiscountItems { allItems }
+                                ... on DiscountProducts {
+                                    products(first: 100) { nodes { id } }
+                                    productVariants(first: 100) { nodes { id } }
+                                }
+                                ... on DiscountCollections {
+                                    collections(first: 50) { nodes { id } }
+                                }
+                            }
+                        }
+                    }
+                    ... on DiscountCodeFreeShipping {
+                        title
+                        status
+                        startsAt
+                        endsAt
+                        usageLimit
+                        asyncUsageCount
+                        minimumRequirement {
+                            __typename
+                            ... on DiscountMinimumSubtotal {
+                                greaterThanOrEqualToSubtotal { amount }
+                            }
+                            ... on DiscountMinimumQuantity {
+                                greaterThanOrEqualToQuantity
+                            }
+                        }
+                    }
+                    ... on DiscountCodeBxgy {
+                        title
+                        status
+                    }
+                    ... on DiscountCodeApp {
+                        title
+                        status
+                    }
+                }
+            }
+        }
+GQL;
+
+        try {
+            $response = Http::withHeaders([
+                'X-Shopify-Access-Token' => $this->accessToken,
+                'Content-Type' => 'application/json',
+            ])->timeout(20)->post(
+                "https://{$this->shopDomain}/admin/api/{$this->apiVersion}/graphql.json",
+                ['query' => $query, 'variables' => ['code' => $code]]
+            );
+
+            if (!$response->ok()) {
+                Log::warning('GraphQL discount HTTP failed', [
+                    'status' => $response->status(),
+                    'body' => substr($response->body(), 0, 300),
+                ]);
+                return ['handled' => false];
+            }
+
+            $json = $response->json() ?? [];
+            if (!empty($json['errors'])) {
+                Log::warning('GraphQL discount errors', ['errors' => $json['errors']]);
+            }
+            $data = $json['data'] ?? [];
+        } catch (\Throwable $e) {
+            Log::warning('GraphQL discount lookup failed, will try REST', [
+                'code' => $code,
+                'error' => $e->getMessage(),
+            ]);
+            return ['handled' => false];
+        }
+
+        $node = $data['codeDiscountNodeByCode']['codeDiscount'] ?? null;
+        if (!$node) {
+            return ['handled' => false];
+        }
+
+        $type = (string) ($node['__typename'] ?? '');
+        $status = strtoupper((string) ($node['status'] ?? ''));
+        if ($status !== '' && $status !== 'ACTIVE') {
+            return ['handled' => true, 'valid' => false, 'error' => 'This discount code is not active'];
+        }
+
+        $now = now();
+        if (!empty($node['startsAt']) && $now->lt($node['startsAt'])) {
+            return ['handled' => true, 'valid' => false, 'error' => 'This discount code is not active yet'];
+        }
+        if (!empty($node['endsAt']) && $now->gt($node['endsAt'])) {
+            return ['handled' => true, 'valid' => false, 'error' => 'This discount code has expired'];
+        }
+
+        $usageLimit = $node['usageLimit'] ?? null;
+        $usageCount = (int) ($node['asyncUsageCount'] ?? 0);
+        if ($usageLimit !== null && $usageCount >= (int) $usageLimit) {
+            return ['handled' => true, 'valid' => false, 'error' => 'This discount code has reached its usage limit'];
+        }
+
+        $qty = 0;
+        foreach ($items as $item) {
+            $qty += max(1, (int) ($item['quantity'] ?? 1));
+        }
+
+        $min = $node['minimumRequirement'] ?? null;
+        if (is_array($min)) {
+            $minAmount = (float) ($min['greaterThanOrEqualToSubtotal']['amount'] ?? 0);
+            if ($minAmount > 0 && ($subtotalCents / 100) < $minAmount) {
+                return [
+                    'handled' => true,
+                    'valid' => false,
+                    'error' => 'Add ' . number_format($minAmount - ($subtotalCents / 100), 2) . ' more to use this code',
+                ];
+            }
+            $minQty = (int) ($min['greaterThanOrEqualToQuantity'] ?? 0);
+            if ($minQty > 0 && $qty < $minQty) {
+                return [
+                    'handled' => true,
+                    'valid' => false,
+                    'error' => 'Add ' . ($minQty - $qty) . ' more item(s) to use this code',
+                ];
+            }
+        }
+
+        if ($type === 'DiscountCodeFreeShipping') {
+            return [
+                'handled' => true,
+                'valid' => true,
+                'code' => $code,
+                'title' => $node['title'] ?? $code,
+                'discount_percent' => 0,
+                'discount_amount' => 0,
+                'free_shipping' => true,
+            ];
+        }
+
+        if ($type === 'DiscountCodeBxgy' || $type === 'DiscountCodeApp') {
+            return [
+                'handled' => true,
+                'valid' => false,
+                'error' => 'This discount type can only be used on Shopify checkout',
+            ];
+        }
+
+        $eligibleCents = $this->eligibleDiscountSubtotal($items, $subtotalCents, $node['customerGets']['items'] ?? []);
+        if ($eligibleCents <= 0) {
+            return ['handled' => true, 'valid' => false, 'error' => 'This code does not apply to the items in your cart'];
+        }
+
+        $value = $node['customerGets']['value'] ?? [];
+        $discountPercent = 0.0;
+        $discountAmount = 0;
+        $valueType = (string) ($value['__typename'] ?? '');
+
+        if ($valueType === 'DiscountPercentage' || isset($value['percentage'])) {
+            $pct = (float) ($value['percentage'] ?? 0);
+            if ($pct > 0 && $pct <= 1) {
+                $pct *= 100;
+            }
+            $discountPercent = $pct;
+            $discountAmount = (int) round($eligibleCents * ($pct / 100));
+        } elseif (isset($value['amount']['amount'])) {
+            $fixed = (float) $value['amount']['amount'];
+            $each = !empty($value['appliesOnEachItem']);
+            $discountAmount = (int) round($fixed * 100 * ($each ? max(1, $qty) : 1));
+            $discountAmount = min($discountAmount, $eligibleCents);
+        }
+
+        if ($discountAmount <= 0 && $discountPercent <= 0) {
+            return ['handled' => true, 'valid' => false, 'error' => 'This discount code cannot be applied'];
+        }
+
+        return [
+            'handled' => true,
+            'valid' => true,
+            'code' => $code,
+            'title' => $node['title'] ?? $code,
+            'discount_percent' => $discountPercent,
+            'discount_amount' => $discountAmount,
+            'free_shipping' => false,
+        ];
+    }
+
+    private function lookupDiscountViaRest(string $code, int $subtotalCents, array $items): array
+    {
         try {
             $lookup = Http::withHeaders([
                 'X-Shopify-Access-Token' => $this->accessToken,
@@ -165,13 +390,13 @@ class ShopifyService
             );
 
             if ($lookup->status() === 404 || !$lookup->ok()) {
-                return ['valid' => false, 'error' => 'Invalid discount code'];
+                return ['valid' => false, 'error' => 'Enter a valid discount code'];
             }
 
             $discount = $lookup->json('discount_code');
             $priceRuleId = $discount['price_rule_id'] ?? null;
             if (!$priceRuleId) {
-                return ['valid' => false, 'error' => 'Invalid discount code'];
+                return ['valid' => false, 'error' => 'Enter a valid discount code'];
             }
 
             $ruleRes = Http::withHeaders([
@@ -187,16 +412,30 @@ class ShopifyService
             $rule = $ruleRes->json('price_rule') ?? [];
             $now = now();
             if (!empty($rule['starts_at']) && $now->lt($rule['starts_at'])) {
-                return ['valid' => false, 'error' => 'Discount code is not active yet'];
+                return ['valid' => false, 'error' => 'This discount code is not active yet'];
             }
             if (!empty($rule['ends_at']) && $now->gt($rule['ends_at'])) {
-                return ['valid' => false, 'error' => 'Discount code expired'];
+                return ['valid' => false, 'error' => 'This discount code has expired'];
+            }
+
+            $prerequisite = (float) ($rule['prerequisite_subtotal_range']['greater_than_or_equal_to'] ?? 0);
+            if ($prerequisite > 0 && ($subtotalCents / 100) < $prerequisite) {
+                return ['valid' => false, 'error' => 'Cart does not meet the minimum for this code'];
             }
 
             $valueType = $rule['value_type'] ?? 'percentage';
             $value = (float) ($rule['value'] ?? 0);
             $abs = abs($value);
             $freeShipping = ($rule['target_type'] ?? '') === 'shipping_line';
+
+            $eligibleIds = [];
+            foreach (($rule['entitled_product_ids'] ?? []) as $id) {
+                $eligibleIds['p' . $id] = true;
+            }
+            foreach (($rule['entitled_variant_ids'] ?? []) as $id) {
+                $eligibleIds['v' . $id] = true;
+            }
+            $eligibleCents = $this->eligibleSubtotalFromIds($items, $subtotalCents, $eligibleIds);
 
             if ($freeShipping) {
                 return [
@@ -213,9 +452,13 @@ class ShopifyService
             $discountAmount = 0;
             if ($valueType === 'percentage') {
                 $discountPercent = $abs;
-                $discountAmount = (int) round($subtotalCents * ($discountPercent / 100));
+                $discountAmount = (int) round($eligibleCents * ($discountPercent / 100));
             } else {
-                $discountAmount = (int) round($abs * 100);
+                $discountAmount = min($eligibleCents, (int) round($abs * 100));
+            }
+
+            if ($discountAmount <= 0) {
+                return ['valid' => false, 'error' => 'This code does not apply to the items in your cart'];
             }
 
             return [
@@ -227,9 +470,100 @@ class ShopifyService
                 'free_shipping' => false,
             ];
         } catch (\Throwable $e) {
-            Log::error('lookupDiscountCode failed', ['error' => $e->getMessage()]);
-            return ['valid' => false, 'error' => 'Validation failed'];
+            Log::error('lookupDiscountCode REST failed', ['error' => $e->getMessage()]);
+            return ['valid' => false, 'error' => 'Could not validate discount code'];
         }
+    }
+
+    private function eligibleDiscountSubtotal(array $items, int $fallbackCents, array $getsItems): int
+    {
+        $type = (string) ($getsItems['__typename'] ?? '');
+        if ($type === '' || $type === 'AllDiscountItems' || !empty($getsItems['allItems'])) {
+            return max(0, $fallbackCents);
+        }
+
+        $productIds = [];
+        $variantIds = [];
+        foreach (($getsItems['products']['nodes'] ?? []) as $node) {
+            $productIds[] = $this->gidId($node['id'] ?? '');
+        }
+        foreach (($getsItems['productVariants']['nodes'] ?? []) as $node) {
+            $variantIds[] = $this->gidId($node['id'] ?? '');
+        }
+
+        $collectionIds = [];
+        foreach (($getsItems['collections']['nodes'] ?? []) as $node) {
+            $collectionIds[] = $this->gidId($node['id'] ?? '');
+        }
+
+        if (empty($productIds) && empty($variantIds) && empty($collectionIds)) {
+            return max(0, $fallbackCents);
+        }
+
+        $eligible = 0;
+        foreach ($items as $item) {
+            $pid = (int) ($item['product_id'] ?? 0);
+            $vid = (int) ($item['variant_id'] ?? 0);
+            $line = (int) ($item['price'] ?? $item['price_cents'] ?? 0) * max(1, (int) ($item['quantity'] ?? 1));
+            $ok = in_array($pid, $productIds, true) || in_array($vid, $variantIds, true);
+            if (!$ok && $pid && $collectionIds) {
+                $ok = $this->productInCollections($pid, $collectionIds);
+            }
+            if ($ok) {
+                $eligible += $line;
+            }
+        }
+
+        return $eligible;
+    }
+
+    private function eligibleSubtotalFromIds(array $items, int $fallbackCents, array $eligibleIds): int
+    {
+        if (empty($eligibleIds)) {
+            return max(0, $fallbackCents);
+        }
+        $eligible = 0;
+        foreach ($items as $item) {
+            $pid = (int) ($item['product_id'] ?? 0);
+            $vid = (int) ($item['variant_id'] ?? 0);
+            if (isset($eligibleIds['p' . $pid]) || isset($eligibleIds['v' . $vid])) {
+                $eligible += (int) ($item['price'] ?? $item['price_cents'] ?? 0) * max(1, (int) ($item['quantity'] ?? 1));
+            }
+        }
+        return $eligible;
+    }
+
+    private function productInCollections(int $productId, array $collectionIds): bool
+    {
+        if (!$productId || empty($collectionIds)) {
+            return false;
+        }
+        try {
+            $res = Http::withHeaders([
+                'X-Shopify-Access-Token' => $this->accessToken,
+            ])->timeout(15)->get(
+                "https://{$this->shopDomain}/admin/api/{$this->apiVersion}/products/{$productId}/collections.json"
+            );
+            if (!$res->ok()) {
+                return false;
+            }
+            foreach (($res->json('collections') ?? []) as $col) {
+                if (in_array((int) ($col['id'] ?? 0), $collectionIds, true)) {
+                    return true;
+                }
+            }
+        } catch (\Throwable $e) {
+            return false;
+        }
+        return false;
+    }
+
+    private function gidId(string $gid): int
+    {
+        if (preg_match('/\/(\d+)$/', $gid, $m)) {
+            return (int) $m[1];
+        }
+        return (int) $gid;
     }
 
     public function getShippingRates(string $countryCode, ?string $provinceCode, int $subtotalCents): array

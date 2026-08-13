@@ -811,7 +811,7 @@ body {
                     <span class="value" id="subV"><?php echo $sym . number_format($displaySub/100, 2); ?></span>
                 </div>
                 <div class="total-row" id="discountRow" style="display:none;">
-                    <span class="label">Discount <span id="discountCodeLabel"></span></span>
+                    <span class="label">Order discount <span id="discountCodeLabel"></span></span>
                     <span class="value" id="discountV" style="color:var(--success);">-<?php echo $sym; ?>0.00</span>
                 </div>
                 <div class="total-row">
