@@ -14,8 +14,8 @@
         onclick="history.back()"
         style="
             padding:14px 32px;
-            background:linear-gradient(135deg,#667eea,#764ba2);
-            color:white;border:none;border-radius:10px;
+            background:#0b1220;
+            color:white;border:none;border-radius:999px;
             font-size:15px;font-weight:700;cursor:pointer;
         "
     >
