@@ -3,28 +3,26 @@
 @section('content')
 @php
     $hidden = ['stripe_client_secret', 'password', 'remember_token'];
-    $payload = [
-        'session' => collect($session->toArray())->except($hidden)->all(),
-        'events'  => $paymentLogs->map(fn ($l) => collect($l->toArray())->except($hidden)->all())->values()->all(),
-        'stripe'  => $stripeData ? json_decode(json_encode($stripeData), true) : null,
-    ];
-    $pretty = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     $method = $session->wallet_type === 'apple_pay' ? 'Apple Pay'
         : ($session->wallet_type === 'google_pay' ? 'Google Pay'
         : ($session->wallet_type === 'link' ? 'Link' : 'Card'));
+    $eventPayloads = [];
+    foreach ($paymentLogs as $l) {
+        $eventPayloads[(string) $l->id] = [
+            'title' => (string) $l->event_type,
+            'json'  => json_encode(collect($l->toArray())->except($hidden)->all(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        ];
+    }
 @endphp
 
 <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px;">
     <a href="{{ route('tenant.logs') }}" class="btn btn-sm btn-ghost">Back</a>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button type="button" class="btn btn-sm btn-ghost" onclick="openLogJson()">View log</button>
-        @if($session->status === 'paid' && !$session->shopify_order_id)
-        <form method="POST" action="{{ route('tenant.sync.order', $session->session_id) }}">
-            @csrf
-            <button type="submit" class="btn btn-sm">Sync to Shopify</button>
-        </form>
-        @endif
-    </div>
+    @if($session->status === 'paid' && !$session->shopify_order_id)
+    <form method="POST" action="{{ route('tenant.sync.order', $session->session_id) }}">
+        @csrf
+        <button type="submit" class="btn btn-sm">Sync to Shopify</button>
+    </form>
+    @endif
 </div>
 
 <div class="tw" style="margin-bottom:16px;">
@@ -122,7 +120,6 @@
 <div class="tw">
     <div class="tw-head">
         <div class="tw-title">Timeline</div>
-        <button type="button" class="btn btn-sm btn-ghost" onclick="openLogJson()">View log</button>
     </div>
     <table>
         <thead><tr><th>Event</th><th>Status</th><th>Amount</th><th>Note</th><th>Time</th></tr></thead>
@@ -138,14 +135,14 @@
                 @else
                     <span class="badge badge-gray">{{ $log->status }}</span>
                 @endif
-                <button type="button" class="btn btn-sm btn-ghost" style="margin-left:6px;" onclick="openEventJson({{ $log->id }})">View log</button>
+                <button type="button" class="btn btn-sm btn-ghost js-view-log" data-id="{{ $log->id }}">View log</button>
             </td>
             <td>@if($log->amount){{ number_format($log->amount/100, 2) }} {{ $log->currency }}@else — @endif</td>
             <td style="font-size:12px;color:var(--muted);max-width:220px;">
                 @php
                     $note = (string) ($log->error_message ?? '');
                     if (strlen($note) > 80) {
-                        $note = Str::limit(preg_replace('/\s+/', ' ', $note), 72);
+                        $note = \Illuminate\Support\Str::limit(preg_replace('/\s+/', ' ', $note), 72);
                     }
                 @endphp
                 {{ $note !== '' ? $note : '—' }}
@@ -158,46 +155,54 @@
 </div>
 @endif
 
-<div class="modal-bg" id="json-modal" onclick="if(event.target===this)closeLogJson()">
-    <div class="modal" role="dialog" aria-label="Raw log">
+<div class="modal-bg" id="json-modal">
+    <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-h">
-            <strong>Raw log</strong>
+            <strong id="json-title">Event log</strong>
             <div style="display:flex;gap:8px;">
-                <button type="button" class="btn btn-sm btn-ghost" onclick="copyLogJson(this)">Copy</button>
-                <button type="button" class="btn btn-sm" onclick="closeLogJson()">Close</button>
+                <button type="button" class="btn btn-sm btn-ghost" id="json-copy">Copy</button>
+                <button type="button" class="btn btn-sm" id="json-close">Close</button>
             </div>
         </div>
-        <div class="modal-b"><pre id="log-json">{!! e($pretty) !!}</pre></div>
+        <div class="modal-b"><pre id="log-json"></pre></div>
     </div>
 </div>
 
 <script>
-var FULL_LOG = {!! json_encode($pretty) !!};
-var EVENT_LOGS = {!! json_encode($paymentLogs->mapWithKeys(function ($l) {
-    return [$l->id => [
-        'title' => $l->event_type,
-        'json' => json_encode(collect($l->toArray())->except(['stripe_client_secret'])->all(), JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE),
-    ]];
-})) !!};
-function openEventJson(id){
-    var row = EVENT_LOGS[id] || EVENT_LOGS[String(id)];
-    if (!row) return;
-    showJson(row.title, row.json);
-}
-function showJson(title, text){
-    document.getElementById('json-title').textContent = title || 'Raw log';
-    document.getElementById('log-json').textContent = text || '';
-    document.getElementById('json-modal').classList.add('open');
-    document.body.style.overflow='hidden';
-}
-function openLogJson(){ showJson('Complete session', FULL_LOG); }
-function openEventJson(title, text){ showJson(title || 'Event', text); }
-function closeLogJson(){ document.getElementById('json-modal').classList.remove('open'); document.body.style.overflow=''; }
-function copyLogJson(btn){
-    var t = document.getElementById('log-json').textContent;
-    var done = function(){ var o=btn.textContent; btn.textContent='Copied'; setTimeout(function(){btn.textContent=o;},1400); };
-    if (navigator.clipboard) navigator.clipboard.writeText(t).then(done);
-}
-document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeLogJson(); });
+(function () {
+    var EVENT_LOGS = @json($eventPayloads);
+    var modal = document.getElementById('json-modal');
+    var titleEl = document.getElementById('json-title');
+    var bodyEl = document.getElementById('log-json');
+
+    function openModal(title, text) {
+        titleEl.textContent = title || 'Event log';
+        bodyEl.textContent = text || '';
+        modal.classList.add('open');
+        document.body.style.overflow = 'hidden';
+    }
+    function closeModal() {
+        modal.classList.remove('open');
+        document.body.style.overflow = '';
+    }
+
+    document.querySelectorAll('.js-view-log').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var row = EVENT_LOGS[String(btn.getAttribute('data-id'))];
+            if (!row) return;
+            openModal(row.title, row.json);
+        });
+    });
+
+    document.getElementById('json-close').addEventListener('click', closeModal);
+    modal.addEventListener('click', function (e) { if (e.target === modal) closeModal(); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
+    document.getElementById('json-copy').addEventListener('click', function () {
+        var btn = this;
+        var t = bodyEl.textContent || '';
+        var done = function () { var o = btn.textContent; btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = o; }, 1400); };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done);
+    });
+})();
 </script>
 @endsection

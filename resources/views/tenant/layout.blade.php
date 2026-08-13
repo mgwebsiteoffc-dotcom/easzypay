@@ -101,7 +101,7 @@
         .kv dt{color:var(--muted);font-size:12px;padding-top:2px}
         .kv dd{font-weight:550;word-break:break-word}
         .panel-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:20px}
-        .modal-bg{position:fixed;inset:0;background:rgba(11,18,32,.55);z-index:200;display:none;align-items:center;justify-content:center;padding:24px}
+        .modal-bg{position:fixed;inset:0;background:rgba(11,18,32,.55);z-index:400;display:none;align-items:center;justify-content:center;padding:24px}
         .modal-bg.open{display:flex}
         .modal{background:#fff;border-radius:18px;width:min(920px,100%);max-height:86vh;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.25)}
         .modal-h{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}
