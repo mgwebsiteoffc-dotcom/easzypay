@@ -49,7 +49,7 @@
         .stat.danger .stat-val{color:var(--danger)}
         .stat.warning .stat-val{color:var(--warning)}
 
-        .tw{background:var(--white);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-bottom:20px}
+        .tw{background:var(--white);border:1px solid var(--line);border-radius:16px;overflow-x:auto;margin-bottom:20px}
         .tw-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
         .tw-title{font-size:15px;font-weight:700}
         table{width:100%;border-collapse:collapse}
@@ -95,12 +95,26 @@
         .note-info{background:#f3f6f5;border:1px solid #d5e0dc;color:#2d3b38}
         .note-ok{background:#e7f6f3;border:1px solid #b7e0d8;color:#134e4a}
         code{background:#fff;border:1px solid var(--line);padding:1px 6px;border-radius:6px;font-size:12px;color:var(--ink)}
+        .fld{padding:8px 12px;border:1px solid var(--line);border-radius:999px;font-size:13px;outline:none;background:#fff}
+        .fld:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(15,118,110,.12)}
+        .kv{display:grid;grid-template-columns:140px 1fr;gap:8px 16px;font-size:14px}
+        .kv dt{color:var(--muted);font-size:12px;padding-top:2px}
+        .kv dd{font-weight:550;word-break:break-word}
+        .panel-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:20px}
+        .modal-bg{position:fixed;inset:0;background:rgba(11,18,32,.55);z-index:200;display:none;align-items:center;justify-content:center;padding:24px}
+        .modal-bg.open{display:flex}
+        .modal{background:#fff;border-radius:18px;width:min(920px,100%);max-height:86vh;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.25)}
+        .modal-h{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}
+        .modal-b{overflow:auto;padding:0;background:#0b1220}
+        .modal-b pre{margin:0;padding:20px;color:#d1fae5;font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}
 
         @media(max-width:768px){
             .sb{transform:translateX(-100%)}
             .main{margin-left:0}
             .stats{grid-template-columns:repeat(2,1fr)}
             .content{padding:18px}
+            .panel-grid{grid-template-columns:1fr}
+            .kv{grid-template-columns:1fr}
         }
     </style>
 </head>
