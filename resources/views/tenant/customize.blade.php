@@ -136,6 +136,24 @@
                     <textarea name="checkout_footer_text" rows="2" placeholder="Returns within 30 days. Customer support: support@example.com" style="width:100%;padding:10px 14px;border:1.5px solid var(--g200);border-radius:8px;font-size:14px;font-family:inherit;resize:vertical;">{{ $store->checkout_footer_text ?? '' }}</textarea>
                 </div>
             </div>
+
+            @php $trk = is_array($store->checkout_settings) ? $store->checkout_settings : []; @endphp
+            <div class="stat" style="margin-bottom:20px;">
+                <div class="stat-label" style="margin-bottom:12px;">Tracking — checkout &amp; thank you</div>
+                <p style="font-size:13px;color:var(--muted);margin-bottom:14px;line-height:1.6;">GA4 fires <code>begin_checkout</code> on the pay page and <code>purchase</code> on thank you. Add extra pixels (Meta, TikTok, GTM) in the snippet boxes.</p>
+                <div style="margin-bottom:14px;">
+                    <label style="display:block;font-size:13px;font-weight:650;margin-bottom:6px;">GA4 Measurement ID</label>
+                    <input type="text" name="ga4_id" value="{{ $trk['ga4_id'] ?? '' }}" placeholder="G-XXXXXXXXXX" style="width:100%;padding:10px 14px;border:1px solid var(--line);border-radius:10px;font-size:14px;">
+                </div>
+                <div style="margin-bottom:14px;">
+                    <label style="display:block;font-size:13px;font-weight:650;margin-bottom:6px;">Checkout page snippet</label>
+                    <textarea name="checkout_tracking" rows="5" placeholder="&lt;script&gt;…&lt;/script&gt; for Meta / extra tags" style="width:100%;padding:10px 14px;border:1px solid var(--line);border-radius:10px;font-size:12px;font-family:ui-monospace,monospace;">{{ $trk['checkout_tracking'] ?? '' }}</textarea>
+                </div>
+                <div>
+                    <label style="display:block;font-size:13px;font-weight:650;margin-bottom:6px;">Thank-you page snippet</label>
+                    <textarea name="thankyou_tracking" rows="5" placeholder="Purchase pixels, conversion tags" style="width:100%;padding:10px 14px;border:1px solid var(--line);border-radius:10px;font-size:12px;font-family:ui-monospace,monospace;">{{ $trk['thankyou_tracking'] ?? '' }}</textarea>
+                </div>
+            </div>
             
             <!-- Manual Install Code -->
 <div class="stat" style="margin-bottom:20px;">

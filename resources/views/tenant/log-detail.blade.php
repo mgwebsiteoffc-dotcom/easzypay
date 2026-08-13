@@ -44,7 +44,7 @@
                 <span class="badge badge-gray">{{ ucfirst($session->status) }}</span>
         @endswitch
     </div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);">
+    <div class="panel-grid" style="gap:0;margin:0;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));">
         <div style="padding:18px 20px;border-right:1px solid var(--line);">
             <div class="stat-label">Charged</div>
             <div style="font-size:22px;font-weight:750;letter-spacing:-0.03em;">{{ $session->formatted_total }}</div>
@@ -130,7 +130,7 @@
         @foreach($paymentLogs as $log)
         <tr>
             <td style="font-family:ui-monospace,monospace;font-size:12px;">{{ $log->event_type }}</td>
-            <td>
+            <td style="white-space:nowrap;">
                 @if(in_array($log->status, ['success','succeeded']))
                     <span class="badge badge-success">{{ $log->status }}</span>
                 @elseif($log->status === 'failed')
@@ -138,9 +138,18 @@
                 @else
                     <span class="badge badge-gray">{{ $log->status }}</span>
                 @endif
+                <button type="button" class="btn btn-sm btn-ghost" style="margin-left:6px;" onclick="openEventJson({{ $log->id }})">View log</button>
             </td>
             <td>@if($log->amount){{ number_format($log->amount/100, 2) }} {{ $log->currency }}@else — @endif</td>
-            <td style="font-size:12px;color:var(--muted);max-width:280px;">{{ $log->error_message ?: '—' }}</td>
+            <td style="font-size:12px;color:var(--muted);max-width:220px;">
+                @php
+                    $note = (string) ($log->error_message ?? '');
+                    if (strlen($note) > 80) {
+                        $note = Str::limit(preg_replace('/\s+/', ' ', $note), 72);
+                    }
+                @endphp
+                {{ $note !== '' ? $note : '—' }}
+            </td>
             <td style="font-size:12px;color:var(--muted);white-space:nowrap;">{{ $log->created_at->format('M j, g:i a') }}</td>
         </tr>
         @endforeach
@@ -163,7 +172,26 @@
 </div>
 
 <script>
-function openLogJson(){ document.getElementById('json-modal').classList.add('open'); document.body.style.overflow='hidden'; }
+var FULL_LOG = {!! json_encode($pretty) !!};
+var EVENT_LOGS = {!! json_encode($paymentLogs->mapWithKeys(function ($l) {
+    return [$l->id => [
+        'title' => $l->event_type,
+        'json' => json_encode(collect($l->toArray())->except(['stripe_client_secret'])->all(), JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE),
+    ]];
+})) !!};
+function openEventJson(id){
+    var row = EVENT_LOGS[id] || EVENT_LOGS[String(id)];
+    if (!row) return;
+    showJson(row.title, row.json);
+}
+function showJson(title, text){
+    document.getElementById('json-title').textContent = title || 'Raw log';
+    document.getElementById('log-json').textContent = text || '';
+    document.getElementById('json-modal').classList.add('open');
+    document.body.style.overflow='hidden';
+}
+function openLogJson(){ showJson('Complete session', FULL_LOG); }
+function openEventJson(title, text){ showJson(title || 'Event', text); }
 function closeLogJson(){ document.getElementById('json-modal').classList.remove('open'); document.body.style.overflow=''; }
 function copyLogJson(btn){
     var t = document.getElementById('log-json').textContent;

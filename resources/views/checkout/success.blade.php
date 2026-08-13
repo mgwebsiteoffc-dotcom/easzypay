@@ -69,6 +69,12 @@ if ($sess && $sess->card_brand && $sess->card_last4) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Thank you<?php echo $orderNo ? ' — ' . htmlspecialchars($orderNo) : ''; ?></title>
+<?php
+    $trackStore = $store ?? ($sess && $sess->store_id ? \App\Models\Store::find($sess->store_id) : null);
+    if ($rStatus === 'succeeded') {
+        echo view('partials.tracking', ['store' => $trackStore, 'session' => $sess, 'page' => 'thankyou'])->render();
+    }
+?>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {

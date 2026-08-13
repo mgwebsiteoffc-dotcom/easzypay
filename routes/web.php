@@ -729,6 +729,11 @@ Route::middleware(\App\Http\Middleware\TenantAuth::class)->prefix('app')->name('
         ]);
 
         $data['show_trust_badges'] = $request->boolean('show_trust_badges');
+        $settings = is_array($store->checkout_settings) ? $store->checkout_settings : [];
+        $settings['ga4_id'] = trim((string) $request->input('ga4_id', ''));
+        $settings['checkout_tracking'] = (string) $request->input('checkout_tracking', '');
+        $settings['thankyou_tracking'] = (string) $request->input('thankyou_tracking', '');
+        $data['checkout_settings'] = $settings;
 
         $store->update($data);
 
