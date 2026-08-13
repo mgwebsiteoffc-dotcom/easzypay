@@ -1099,40 +1099,107 @@ function mountElements(clientSecret) {
             theme: 'night',
             variables: {
                 colorPrimary: '<?php echo $primaryColor; ?>',
-                colorBackground: '#1f1f1f',
+                colorBackground: '#0a0a0a',
                 colorText: '#ffffff',
+                colorTextSecondary: '#9ca3af',
                 colorDanger: '#ef4444',
                 fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-                borderRadius: '6px',
+                borderRadius: '8px',
                 spacingUnit: '4px'
+            },
+            rules: {
+                '.AccordionItem': { backgroundColor: 'transparent', border: '1px solid #333', boxShadow: 'none' },
+                '.AccordionItem--selected': { backgroundColor: 'transparent', border: '1px solid #333', boxShadow: 'none' },
+                '.Block': { backgroundColor: 'transparent', boxShadow: 'none', border: 'none' },
+                '.Input': { backgroundColor: '#1f1f1f', border: '1px solid #333', boxShadow: 'none', color: '#ffffff' },
+                '.Label': { color: '#9ca3af' }
             }
         }
     });
 
     try {
-        S.expEl = S.elements.create('expressCheckout', { buttonHeight: 50 });
-        S.expEl.mount('#express-checkout-element');
-        S.expEl.on('ready', function(ev) {
-            var hasApple = ev.availablePaymentMethods && ev.availablePaymentMethods.applePay;
-            var hasGoogle = ev.availablePaymentMethods && ev.availablePaymentMethods.googlePay;
-            if (hasApple) { $('applePayBtn').style.display = 'flex'; $('orDivider').style.display = 'flex'; }
-            if (hasGoogle) { $('googlePayBtn').style.display = 'flex'; $('orDivider').style.display = 'flex'; }
-            if (!hasApple && !hasGoogle) {
-                $('expressBtns').style.display = 'none';
-                $('orDivider').style.display = 'none';
+        var ua = navigator.userAgent || '';
+        var isAppleDevice = /iPhone|iPad|iPod|Macintosh/.test(ua) && !/Android/.test(ua);
+        S.expEl = S.elements.create('expressCheckout', {
+            buttonHeight: 48,
+            buttonTheme: { applePay: 'white-outline', googlePay: 'white' },
+            buttonType: { applePay: 'plain', googlePay: 'plain' },
+            layout: { maxColumns: 1, maxRows: 1, overflow: 'never' },
+            paymentMethods: {
+                applePay: isAppleDevice ? 'auto' : 'never',
+                googlePay: isAppleDevice ? 'never' : 'auto',
+                link: 'never',
+                paypal: 'never',
+                amazonPay: 'never',
+                klarna: 'never'
             }
         });
-        S.expEl.on('confirm', async function() {
+        S.expEl.mount('#express-checkout-element');
+        S.expEl.on('ready', function(ev) {
+            var methods = ev.availablePaymentMethods || {};
+            var show = !!(methods.applePay || methods.googlePay);
+            var el = $('express-checkout-element');
+            if (el) el.classList.toggle('is-hidden', !show);
+            if ($('orDivider')) $('orDivider').style.display = show ? 'flex' : 'none';
+        });
+        S.expEl.on('click', function(ev) {
+            ev.resolve({
+                emailRequired: true,
+                phoneNumberRequired: true,
+                shippingAddressRequired: true,
+                billingAddressRequired: true
+            });
+        });
+        S.expEl.on('confirm', async function(ev) {
             if (S.processing) return;
             S.processing = true;
-            var sr = await S.elements.submit();
-            if (sr.error) { showError(sr.error.message); S.processing = false; return; }
-            var res = await S.stripe.confirmPayment({
-                elements: S.elements,
-                clientSecret: S.secret,
-                confirmParams: { return_url: C.url + '/checkout/success?session=' + C.sid }
-            });
-            if (res.error) { showError(res.error.message); S.processing = false; }
+            try {
+                var billing = (ev && ev.billingDetails) || {};
+                var shipping = (ev && ev.shippingAddress) || {};
+                var name = billing.name || shipping.name || '';
+                var addr = (billing.address || shipping.address || {});
+                var email = billing.email || '';
+                if (email && $('email')) { $('email').value = email; floatLabel($('email')); }
+                var pr = await fetch(C.url + '/api/payment-intent', {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({
+                        session_id: C.sid,
+                        amount: S.finalAmount || S.amount,
+                        currency: S.currency,
+                        exchange_rate: S.rate,
+                        detected_currency: String(S.currency).toUpperCase(),
+                        email: email,
+                        shipping: {
+                            name: name,
+                            address: {
+                                line1: addr.line1 || '',
+                                line2: addr.line2 || null,
+                                city: addr.city || '',
+                                state: addr.state || null,
+                                postal_code: addr.postal_code || '',
+                                country: addr.country || 'US'
+                            }
+                        },
+                        shipping_amount: S.freeShipping ? 0 : Math.round(S.shippingBase || 0),
+                        shipping_title: S.shippingTitle
+                    })
+                });
+                var pd = await pr.json();
+                if (pd.error) { showError(pd.error.message); S.processing = false; return; }
+                S.secret = pd.client_secret;
+                var sr = await S.elements.submit();
+                if (sr.error) { showError(sr.error.message); S.processing = false; return; }
+                var res = await S.stripe.confirmPayment({
+                    elements: S.elements,
+                    clientSecret: S.secret,
+                    confirmParams: { return_url: C.url + '/checkout/success?session=' + C.sid }
+                });
+                if (res.error) { showError(res.error.message); S.processing = false; }
+            } catch (err) {
+                showError(err.message || 'Wallet payment failed');
+                S.processing = false;
+            }
         });
     } catch(e) {}
 
@@ -1317,131 +1384,6 @@ function validate() {
         {id:'fn', ck: function(v){return v.length > 0;}, m: 'First name required'},
         {id:'ln', ck: function(v){return v.length > 0;}, m: 'Last name required'},
         {id:'a1', ck: function(v){return v.length > 0;}, m: 'Address required'},
-        {id:'city', ck: function(v){return v.length > 0;}, m: 'City required'},
-        {id:'zip', ck: function(v){return v.length > 0;}, m: 'PIN code required'}
-    ];
-    f.forEach(function(x) { var e = $(x.id); if (e) e.classList.remove('is-invalid'); });
-    for (var i = 0; i < f.length; i++) {
-        var x = f[i], e = $(x.id), v = e ? e.value.trim() : '';
-        if (!x.ck(v)) {
-            if (e) { e.classList.add('is-invalid'); e.scrollIntoView({behavior:'smooth', block:'center'}); e.focus(); }
-            showError(x.m);
-            return false;
-        }
-    }
-    return true;
-}
-
-function setLoading(on) {
-    $('payBtn').disabled = on;
-    $('paySpn').style.display = on ? 'inline-block' : 'none';
-    $('payTxt').textContent = on ? 'PROCESSING...' : ('PAY ' + money(S.finalAmount || S.amount, S.currency));
-}
-function showError(msg) {
-    $('errBox').textContent = msg;
-    $('errBox').style.display = 'block';
-    $('errBox').scrollIntoView({behavior:'smooth', block:'nearest'});
-}
-function hideError() { $('errBox').style.display = 'none'; }
-function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, function(ch) {
-        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]);
-    });
-}
-
-init();
-</script>
-
-<footer class="policy-footer" id="policyFooter">
-    <a id="polShipping" href="#" target="_blank" rel="noopener">Shipping policy</a>
-    <a id="polRefund" href="#" target="_blank" rel="noopener">Refund policy</a>
-    <a id="polPrivacy" href="#" target="_blank" rel="noopener">Privacy policy</a>
-    <a id="polTerms" href="#" target="_blank" rel="noopener">Terms of service</a>
-</footer>
-</body>
-</html>
-ss required'},
-        {id:'city', ck: function(v){return v.length > 0;}, m: 'City required'},
-        {id:'zip', ck: function(v){return v.length > 0;}, m: 'PIN code required'}
-    ];
-    f.forEach(function(x) { var e = $(x.id); if (e) e.classList.remove('is-invalid'); });
-    for (var i = 0; i < f.length; i++) {
-        var x = f[i], e = $(x.id), v = e ? e.value.trim() : '';
-        if (!x.ck(v)) {
-            if (e) { e.classList.add('is-invalid'); e.scrollIntoView({behavior:'smooth', block:'center'}); e.focus(); }
-            showError(x.m);
-            return false;
-        }
-    }
-    return true;
-}
-
-function setLoading(on) {
-    $('payBtn').disabled = on;
-    $('paySpn').style.display = on ? 'inline-block' : 'none';
-    $('payTxt').textContent = on ? 'PROCESSING...' : ('PAY ' + money(S.finalAmount || S.amount, S.currency));
-}
-function showError(msg) {
-    $('errBox').textContent = msg;
-    $('errBox').style.display = 'block';
-    $('errBox').scrollIntoView({behavior:'smooth', block:'nearest'});
-}
-function hideError() { $('errBox').style.display = 'none'; }
-function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, function(ch) {
-        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]);
-    });
-}
-
-init();
-</script>
-
-<footer class="policy-footer" id="policyFooter">
-    <a id="polShipping" href="#" target="_blank" rel="noopener">Shipping policy</a>
-    <a id="polRefund" href="#" target="_blank" rel="noopener">Refund policy</a>
-    <a id="polPrivacy" href="#" target="_blank" rel="noopener">Privacy policy</a>
-    <a id="polTerms" href="#" target="_blank" rel="noopener">Terms of service</a>
-</footer>
-</body>
-</html>
-     if (!x.ck(v)) {
-            if (e) { e.classList.add('is-invalid'); e.scrollIntoView({behavior:'smooth', block:'center'}); e.focus(); }
-            showError(x.m);
-            return false;
-        }
-    }
-    return true;
-}
-
-function setLoading(on) {
-    $('payBtn').disabled = on;
-    $('paySpn').style.display = on ? 'inline-block' : 'none';
-    $('payTxt').textContent = on ? 'PROCESSING...' : ('PAY ' + money(S.finalAmount || S.amount, S.currency));
-}
-function showError(msg) {
-    $('errBox').textContent = msg;
-    $('errBox').style.display = 'block';
-    $('errBox').scrollIntoView({behavior:'smooth', block:'nearest'});
-}
-function hideError() { $('errBox').style.display = 'none'; }
-function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, function(ch) {
-        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]);
-    });
-}
-
-init();
-</script>
-
-<footer class="policy-footer" id="policyFooter">
-    <a id="polShipping" href="#" target="_blank" rel="noopener">Shipping policy</a>
-    <a id="polRefund" href="#" target="_blank" rel="noopener">Refund policy</a>
-    <a id="polPrivacy" href="#" target="_blank" rel="noopener">Privacy policy</a>
-    <a id="polTerms" href="#" target="_blank" rel="noopener">Terms of service</a>
-</footer>
-</body>
-</html>
-ss required'},
         {id:'city', ck: function(v){return v.length > 0;}, m: 'City required'},
         {id:'zip', ck: function(v){return v.length > 0;}, m: 'PIN code required'}
     ];
