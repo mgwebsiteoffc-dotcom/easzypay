@@ -274,6 +274,8 @@ class PaymentController extends Controller
         }
 
         $shipCents = 0;
+        $taxCents = 0;
+        $dutiesCents = 0;
         $shipTitle = $shippingTitle !== '' ? $shippingTitle : 'Standard Shipping';
         $store = null;
         if ($session->store_id) {
@@ -288,7 +290,12 @@ class PaymentController extends Controller
         if ($store && !empty($store->access_token) && $country !== '') {
             try {
                 $shopify = new ShopifyService($store->myshopify_domain, $store->access_token);
-                $rates = $shopify->getShippingRates($country, $state ?: null, $subtotal);
+                $quote = $shopify->getShippingRates($country, $state ?: null, $subtotal, [
+                    'items' => is_array($session->items) ? $session->items : [],
+                    'zip' => (string) ($shipping['address']['postal_code'] ?? $session->shipping_zip ?? ''),
+                    'city' => (string) ($shipping['address']['city'] ?? $session->shipping_city ?? ''),
+                ]);
+                $rates = $quote['rates'] ?? [];
                 $matched = null;
                 foreach ($rates as $rate) {
                     if ($shippingTitle !== '' && strcasecmp((string) $rate['title'], $shippingTitle) === 0) {
@@ -301,12 +308,14 @@ class PaymentController extends Controller
                     $shipCents = max(0, (int) ($matched['price'] ?? 0));
                     $shipTitle = (string) ($matched['title'] ?? $shipTitle);
                 }
+                $taxCents = max(0, (int) ($quote['tax_amount'] ?? 0));
+                $dutiesCents = max(0, (int) ($quote['duties_amount'] ?? 0));
             } catch (\Throwable $e) {
                 Log::warning('Shipping quote failed', ['error' => $e->getMessage()]);
             }
         }
 
-        $shopTotal = max(0, $subtotal - $discount + $shipCents);
+        $shopTotal = max(0, $subtotal - $discount + $shipCents + $taxCents + $dutiesCents);
         $fx = app(ExchangeRateService::class)->convert($shopCurrency, $currency, $shopTotal);
 
         return [

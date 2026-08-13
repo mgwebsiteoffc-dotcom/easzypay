@@ -566,9 +566,113 @@ GQL;
         return (int) $gid;
     }
 
-    public function getShippingRates(string $countryCode, ?string $provinceCode, int $subtotalCents): array
+    public function getShippingRates(string $countryCode, ?string $provinceCode, int $subtotalCents, array $context = []): array
     {
         $countryCode = strtoupper($countryCode);
+        $items = is_array($context['items'] ?? null) ? $context['items'] : [];
+        $zip = trim((string) ($context['zip'] ?? ''));
+        $city = trim((string) ($context['city'] ?? ''));
+
+        $calculated = $this->calculateShippingViaDraftOrder($countryCode, $provinceCode, $items, $zip, $city);
+        if (!empty($calculated['rates'])) {
+            return $calculated;
+        }
+
+        $rates = $this->shippingRatesFromZones($countryCode, $provinceCode, $subtotalCents);
+
+        return [
+            'rates' => $rates,
+            'tax_amount' => 0,
+            'duties_amount' => 0,
+        ];
+    }
+
+    private function calculateShippingViaDraftOrder(string $country, ?string $province, array $items, string $zip, string $city): array
+    {
+        $lineItems = [];
+        foreach ($items as $item) {
+            $vid = (int) ($item['variant_id'] ?? 0);
+            if (!$vid) {
+                continue;
+            }
+            $lineItems[] = [
+                'variantId' => "gid://shopify/ProductVariant/{$vid}",
+                'quantity' => max(1, (int) ($item['quantity'] ?? 1)),
+            ];
+        }
+        if (empty($lineItems)) {
+            return ['rates' => [], 'tax_amount' => 0, 'duties_amount' => 0];
+        }
+
+        $address = [
+            'countryCode' => $country,
+            'address1' => 'Checkout',
+        ];
+        if ($province) {
+            $address['provinceCode'] = strtoupper($province);
+        }
+        if ($zip !== '') {
+            $address['zip'] = $zip;
+        }
+        if ($city !== '') {
+            $address['city'] = $city;
+        }
+
+        $mutation = <<<'GQL'
+        mutation CalculateDraft($input: DraftOrderInput!) {
+            draftOrderCalculate(input: $input) {
+                calculatedDraftOrder {
+                    availableShippingRates {
+                        title
+                        handle
+                        price { amount currencyCode }
+                    }
+                    totalTaxSet { shopMoney { amount } }
+                }
+                userErrors { field message }
+            }
+        }
+GQL;
+
+        try {
+            $data = $this->graphql($mutation, [
+                'input' => [
+                    'lineItems' => $lineItems,
+                    'shippingAddress' => $address,
+                ],
+            ]);
+            $calc = $data['draftOrderCalculate']['calculatedDraftOrder'] ?? null;
+            $errors = $data['draftOrderCalculate']['userErrors'] ?? [];
+            if (!empty($errors)) {
+                Log::info('draftOrderCalculate userErrors', ['errors' => $errors]);
+            }
+            if (!$calc) {
+                return ['rates' => [], 'tax_amount' => 0, 'duties_amount' => 0];
+            }
+
+            $rates = [];
+            foreach (($calc['availableShippingRates'] ?? []) as $rate) {
+                $amount = (float) ($rate['price']['amount'] ?? 0);
+                $rates[] = [
+                    'title' => $rate['title'] ?? 'Shipping',
+                    'code' => $rate['handle'] ?? strtolower(str_replace(' ', '_', $rate['title'] ?? 'shipping')),
+                    'price' => (int) round($amount * 100),
+                ];
+            }
+
+            return [
+                'rates' => $rates,
+                'tax_amount' => (int) round(((float) ($calc['totalTaxSet']['shopMoney']['amount'] ?? 0)) * 100),
+                'duties_amount' => (int) round(((float) ($calc['totalDutiesSet']['shopMoney']['amount'] ?? 0)) * 100),
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('draftOrderCalculate failed', ['error' => $e->getMessage()]);
+            return ['rates' => [], 'tax_amount' => 0, 'duties_amount' => 0];
+        }
+    }
+
+    private function shippingRatesFromZones(string $countryCode, ?string $provinceCode, int $subtotalCents): array
+    {
         $rates = [];
 
         try {
@@ -624,15 +728,7 @@ GQL;
                 }
             }
         } catch (\Throwable $e) {
-            Log::warning('getShippingRates failed', ['error' => $e->getMessage()]);
-        }
-
-        if (empty($rates)) {
-            $rates[] = [
-                'title' => 'Standard Shipping',
-                'code'  => 'standard',
-                'price' => 0,
-            ];
+            Log::warning('getShippingRates zones failed', ['error' => $e->getMessage()]);
         }
 
         $unique = [];

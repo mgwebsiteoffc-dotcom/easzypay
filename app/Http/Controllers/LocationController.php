@@ -104,11 +104,16 @@ class LocationController extends Controller
             return response()->json(['valid' => false, 'message' => 'Postcode required']);
         }
 
-        $valid = $this->validatePostcodeFormat($postcode, $country);
+        $lookup = $this->lookupPostcode(trim($postcode), $country);
+        $formatOk = $this->validatePostcodeFormat($postcode, $country);
 
         return response()->json([
-            'valid'   => $valid,
-            'message' => $valid ? 'Valid postcode' : 'Invalid postcode format',
+            'valid'   => $lookup['valid'] || $formatOk,
+            'message' => $lookup['valid'] ? 'Valid postcode' : ($formatOk ? 'Valid format' : 'Invalid postcode'),
+            'city'    => $lookup['city'],
+            'state'   => $lookup['state'],
+            'state_code' => $lookup['state_code'],
+            'country' => $country,
         ]);
     }
 
@@ -227,6 +232,70 @@ class LocationController extends Controller
         }
 
         return [];
+    }
+
+    private function lookupPostcode(string $postcode, string $country): array
+    {
+        $empty = ['valid' => false, 'city' => null, 'state' => null, 'state_code' => null];
+        $postcode = trim($postcode);
+        if ($postcode === '') {
+            return $empty;
+        }
+
+        $cacheKey = 'zip_' . $country . '_' . preg_replace('/\s+/', '', strtoupper($postcode));
+        return Cache::remember($cacheKey, now()->addDay(), function () use ($postcode, $country, $empty) {
+            try {
+                if ($country === 'IN') {
+                    $pin = preg_replace('/\D/', '', $postcode);
+                    $res = Http::timeout(6)->get("https://api.postalpincode.in/pincode/{$pin}");
+                    if ($res->ok()) {
+                        $row = $res->json()[0] ?? [];
+                        $po = $row['PostOffice'][0] ?? null;
+                        if (($row['Status'] ?? '') === 'Success' && $po) {
+                            return [
+                                'valid' => true,
+                                'city' => $po['District'] ?? $po['Name'] ?? null,
+                                'state' => $po['State'] ?? null,
+                                'state_code' => $this->indiaStateCode($po['State'] ?? ''),
+                            ];
+                        }
+                    }
+                }
+
+                $slug = strtolower($country);
+                $zip = rawurlencode(str_replace(' ', '', $postcode));
+                $res = Http::timeout(6)->get("https://api.zippopotam.us/{$slug}/{$zip}");
+                if ($res->ok()) {
+                    $place = ($res->json('places') ?? [])[0] ?? null;
+                    if ($place) {
+                        return [
+                            'valid' => true,
+                            'city' => $place['place name'] ?? null,
+                            'state' => $place['state'] ?? null,
+                            'state_code' => $place['state abbreviation'] ?? null,
+                        ];
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Postcode lookup failed', ['error' => $e->getMessage(), 'country' => $country]);
+            }
+            return $empty;
+        });
+    }
+
+    private function indiaStateCode(string $name): ?string
+    {
+        $map = [
+            'andhra pradesh'=>'AP','arunachal pradesh'=>'AR','assam'=>'AS','bihar'=>'BR',
+            'chhattisgarh'=>'CG','goa'=>'GA','gujarat'=>'GJ','haryana'=>'HR',
+            'himachal pradesh'=>'HP','jharkhand'=>'JH','karnataka'=>'KA','kerala'=>'KL',
+            'madhya pradesh'=>'MP','maharashtra'=>'MH','manipur'=>'MN','meghalaya'=>'ML',
+            'mizoram'=>'MZ','nagaland'=>'NL','odisha'=>'OD','punjab'=>'PB',
+            'rajasthan'=>'RJ','sikkim'=>'SK','tamil nadu'=>'TN','telangana'=>'TG',
+            'tripura'=>'TR','uttar pradesh'=>'UP','uttarakhand'=>'UK','west bengal'=>'WB',
+            'delhi'=>'DL','chandigarh'=>'CH','puducherry'=>'PY',
+        ];
+        return $map[strtolower(trim($name))] ?? null;
     }
 
     private function validatePostcodeFormat(string $postcode, string $country): bool

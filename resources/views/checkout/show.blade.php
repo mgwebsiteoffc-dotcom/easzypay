@@ -814,6 +814,14 @@ body {
                     <span class="label">Shipping <span class="help">ⓘ</span></span>
                     <span class="value muted" id="shipV">Enter shipping address</span>
                 </div>
+                <div class="total-row" id="dutiesRow" style="display:none;">
+                    <span class="label">Duties</span>
+                    <span class="value" id="dutiesV"></span>
+                </div>
+                <div class="total-row" id="taxRow" style="display:none;">
+                    <span class="label">Taxes</span>
+                    <span class="value" id="taxV"></span>
+                </div>
 
                 <div class="total-divider"></div>
 
@@ -853,7 +861,8 @@ var S = {
     currency: C.cur, amount: C.amt, rate: <?php echo $displayRate; ?>,
     processing: false, ready: false,
     discount: 0, discountCode: '', discountAmount: 0, freeShipping: false,
-    shippingCents: 0, shippingBase: 0, shippingTitle: 'Standard Shipping', shippingLoaded: false
+    shippingCents: 0, shippingBase: 0, shippingTitle: 'Standard Shipping', shippingLoaded: false,
+    dutiesBase: 0, taxBase: 0
 };
 
 var $ = function(id) { return document.getElementById(id); };
@@ -911,6 +920,14 @@ function updatePrices(cur, amt, rate) {
     if (S.shippingLoaded && $('shipV')) {
         $('shipV').classList.remove('muted');
         $('shipV').textContent = (S.freeShipping || ship === 0) ? 'Free' : money(ship, cur);
+    }
+    if ($('dutiesRow')) {
+        $('dutiesRow').style.display = duties > 0 ? 'flex' : 'none';
+        if ($('dutiesV')) $('dutiesV').textContent = money(duties, cur);
+    }
+    if ($('taxRow')) {
+        $('taxRow').style.display = tax > 0 ? 'flex' : 'none';
+        if ($('taxV')) $('taxV').textContent = money(tax, cur);
     }
 
     // Update grand total
@@ -1234,10 +1251,27 @@ async function loadShippingRates() {
     var state = $('state') ? $('state').value : '';
     if (!country) return;
     try {
-        var r = await fetch(C.url + '/api/shipping-rates?session_id=' + encodeURIComponent(C.sid) + '&country=' + encodeURIComponent(country) + '&state=' + encodeURIComponent(state || ''));
+        var zip = $('zip') ? $('zip').value.trim() : '';
+        var city = $('city') ? $('city').value.trim() : '';
+        var r = await fetch(C.url + '/api/shipping-rates?session_id=' + encodeURIComponent(C.sid)
+            + '&country=' + encodeURIComponent(country)
+            + '&state=' + encodeURIComponent(state || '')
+            + '&zip=' + encodeURIComponent(zip)
+            + '&city=' + encodeURIComponent(city));
         var d = await r.json();
         var rates = d.rates || [];
-        if (!rates.length) return;
+        S.dutiesBase = parseInt(d.duties_amount || 0, 10) || 0;
+        S.taxBase = parseInt(d.tax_amount || 0, 10) || 0;
+        if (!rates.length) {
+            if ($('shippingBox')) {
+                $('shippingBox').style.display = 'block';
+                $('shippingBox').textContent = zip ? 'No shipping rates for this address.' : 'Enter your shipping address to view available shipping methods.';
+            }
+            if ($('shippingRates')) $('shippingRates').style.display = 'none';
+            S.shippingLoaded = false;
+            updatePrices(S.currency, S.amount, S.rate);
+            return;
+        }
         if ($('shippingBox')) $('shippingBox').style.display = 'none';
         var wrap = $('shippingRates');
         if (!wrap) return;
@@ -1296,10 +1330,14 @@ async function init() {
         var pi = await createPI(cur.toLowerCase(), S.finalAmount || amt);
         if (pi) mountElements(pi.client_secret);
         loadPolicies();
-        ['city','zip','state','country'].forEach(function(id) {
+        ['city','state','country'].forEach(function(id) {
             var el = $(id);
             if (el) el.addEventListener('change', function(){ loadShippingRates(); });
         });
+        if ($('zip')) {
+            $('zip').addEventListener('blur', lookupZipAndShip);
+            $('zip').addEventListener('change', lookupZipAndShip);
+        }
         $('pgL').style.display = 'none';
     } catch(e) {
         $('pgL').style.display = 'none';
