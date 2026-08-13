@@ -1472,6 +1472,108 @@ function showError(msg) {
     $('errBox').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
 function hideError() { $('errBox').style.display = 'none'; }
+
+async function lookupZipAndShip() {
+    var zip = $('zip') ? $('zip').value.trim() : '';
+    var country = $('country') ? $('country').value : '';
+    if (!zip || !country) {
+        await loadShippingRates();
+        return;
+    }
+    try {
+        var r = await fetch(C.url + '/api/location/validate-postcode?postcode=' + encodeURIComponent(zip) + '&country=' + encodeURIComponent(country));
+        var d = await r.json();
+        applyPlace(d);
+        if (d.valid === false) $('zip').classList.add('is-invalid');
+        else $('zip').classList.remove('is-invalid');
+    } catch (e) {}
+    await loadShippingRates();
+}
+
+function applyPlace(d) {
+    if (!d) return;
+    if (d.city && $('city')) {
+        $('city').value = d.city;
+        floatLabel($('city'));
+    }
+    if ($('state') && (d.state_code || d.state)) {
+        var code = d.state_code || d.state;
+        var found = false;
+        for (var i = 0; i < $('state').options.length; i++) {
+            if ($('state').options[i].value === code || $('state').options[i].textContent === d.state) {
+                $('state').selectedIndex = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found && code) {
+            var opt = document.createElement('option');
+            opt.value = code;
+            opt.textContent = d.state || code;
+            $('state').appendChild(opt);
+            $('state').value = code;
+        }
+    }
+    if (d.postcode && $('zip') && !$('zip').value) {
+        $('zip').value = d.postcode;
+        floatLabel($('zip'));
+    }
+}
+
+var addrTimer = null;
+function bindAddressSuggest() {
+    var input = $('a1');
+    var box = $('addrSuggest');
+    if (!input || !box) return;
+    input.addEventListener('input', function() {
+        floatLabel(input);
+        clearTimeout(addrTimer);
+        var q = input.value.trim();
+        if (q.length < 3) { box.classList.remove('show'); box.innerHTML = ''; return; }
+        addrTimer = setTimeout(function() { fetchAddressSuggestions(q); }, 250);
+    });
+    document.addEventListener('click', function(ev) {
+        if (!box.contains(ev.target) && ev.target !== input) box.classList.remove('show');
+    });
+}
+
+async function fetchAddressSuggestions(q) {
+    var box = $('addrSuggest');
+    var country = $('country') ? $('country').value : '';
+    try {
+        var r = await fetch(C.url + '/api/location/suggest-address?q=' + encodeURIComponent(q) + '&country=' + encodeURIComponent(country));
+        var d = await r.json();
+        var list = d.suggestions || [];
+        if (!list.length) { box.classList.remove('show'); box.innerHTML = ''; return; }
+        box.innerHTML = '';
+        list.forEach(function(s) {
+            var el = document.createElement('div');
+            el.className = 'addr-opt';
+            el.textContent = s.label;
+            el.addEventListener('click', async function() {
+                $('a1').value = s.line1 || s.label;
+                floatLabel($('a1'));
+                if (s.country && $('country') && $('country').value !== s.country) {
+                    $('country').value = s.country;
+                    await loadStates(s.country);
+                }
+                applyPlace({
+                    city: s.city,
+                    state: s.state,
+                    state_code: s.state_code,
+                    postcode: s.postcode
+                });
+                box.classList.remove('show');
+                await loadShippingRates();
+            });
+            box.appendChild(el);
+        });
+        box.classList.add('show');
+    } catch (e) {
+        box.classList.remove('show');
+    }
+}
+
 function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, function(ch) {
         return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]);
