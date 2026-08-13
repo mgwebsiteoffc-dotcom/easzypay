@@ -93,6 +93,7 @@ Route::prefix('api')->group(function () {
     Route::get('/location/states', [\App\Http\Controllers\LocationController::class, 'getStates']);
     Route::get('/location/cities', [\App\Http\Controllers\LocationController::class, 'getCities']);
     Route::get('/location/validate-postcode', [\App\Http\Controllers\LocationController::class, 'validatePostcode']);
+    Route::get('/location/suggest-address', [\App\Http\Controllers\LocationController::class, 'suggestAddress']);
     Route::get('/checkout-policies', function (Request $request) {
         $sessionId = $request->get('session_id', '');
         $session = \App\Models\CheckoutSession::where('session_id', $sessionId)->first();

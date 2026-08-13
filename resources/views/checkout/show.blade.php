@@ -608,6 +608,26 @@ body {
 }
 .policy-footer a { color: var(--primary); text-decoration: none; }
 .policy-footer a:hover { text-decoration: underline; }
+.addr-suggest {
+    position: absolute;
+    left: 0; right: 0; top: 100%;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+    margin-top: 4px;
+    z-index: 20;
+    overflow: hidden;
+    display: none;
+}
+.addr-suggest.show { display: block; }
+.addr-opt {
+    padding: 10px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    border-bottom: 1px solid #2a2a2a;
+}
+.addr-opt:last-child { border-bottom: none; }
+.addr-opt:hover { background: #2a2a2a; }
 </style>
 </head>
 <body>
@@ -692,8 +712,9 @@ body {
             </div>
 
             <div class="form-group">
-                <input type="text" id="a1" class="form-control" placeholder="Address" autocomplete="address-line1" oninput="floatLabel(this)">
+                <input type="text" id="a1" class="form-control" placeholder="Address" autocomplete="off" oninput="floatLabel(this)">
                 <label for="a1" class="form-label">Address</label>
+                <div class="addr-suggest" id="addrSuggest"></div>
             </div>
 
             <div class="form-group">
@@ -895,8 +916,10 @@ function updatePrices(cur, amt, rate) {
         ? Math.round(S.discountAmount * rate)
         : Math.round(amt * S.discount / 100);
     var ship = S.freeShipping ? 0 : Math.round((S.shippingBase || 0) * rate);
+    var duties = Math.round((S.dutiesBase || 0) * rate);
+    var tax = Math.round((S.taxBase || 0) * rate);
     S.shippingCents = ship;
-    var finalAmount = Math.max(0, amt - discountAmount + ship);
+    var finalAmount = Math.max(0, amt - discountAmount + ship + duties + tax);
 
     // Update item prices (multiply base price by exchange rate)
     document.querySelectorAll('[data-base]').forEach(function(el) {
@@ -1334,6 +1357,7 @@ async function init() {
             var el = $(id);
             if (el) el.addEventListener('change', function(){ loadShippingRates(); });
         });
+        bindAddressSuggest();
         if ($('zip')) {
             $('zip').addEventListener('blur', lookupZipAndShip);
             $('zip').addEventListener('change', lookupZipAndShip);

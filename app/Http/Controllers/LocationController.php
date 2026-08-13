@@ -95,6 +95,68 @@ class LocationController extends Controller
     // ============================================================
     // Validate postcode
     // ============================================================
+    public function suggestAddress(Request $request): JsonResponse
+    {
+        $q = trim((string) $request->get('q', ''));
+        $country = strtoupper((string) $request->get('country', ''));
+        if (strlen($q) < 3) {
+            return response()->json(['suggestions' => []]);
+        }
+
+        $cacheKey = 'addr_' . md5($country . '|' . mb_strtolower($q));
+        $suggestions = Cache::remember($cacheKey, now()->addHours(6), function () use ($q, $country) {
+            try {
+                $url = 'https://photon.komoot.io/api/?q=' . urlencode($q) . '&limit=6&lang=en';
+                $res = Http::timeout(6)
+                    ->withHeaders(['User-Agent' => 'EaszyPayCheckout/1.0'])
+                    ->get($url);
+
+                if (!$res->ok()) {
+                    return [];
+                }
+                $out = [];
+                foreach (($res->json('features') ?? []) as $feat) {
+                    $p = $feat['properties'] ?? [];
+                    $cc = strtoupper((string) ($p['countrycode'] ?? ''));
+                    if ($country && $cc && $cc !== $country) {
+                        continue;
+                    }
+                    $line1 = trim(implode(' ', array_filter([
+                        $p['housenumber'] ?? '',
+                        $p['street'] ?? ($p['name'] ?? ''),
+                    ])));
+                    if ($line1 === '') {
+                        $line1 = (string) ($p['name'] ?? '');
+                    }
+                    if ($line1 === '') {
+                        continue;
+                    }
+                    $out[] = [
+                        'label' => implode(', ', array_filter([
+                            $line1,
+                            $p['city'] ?? $p['district'] ?? $p['county'] ?? null,
+                            $p['state'] ?? null,
+                            $p['postcode'] ?? null,
+                            $cc ?: null,
+                        ])),
+                        'line1' => $line1,
+                        'city' => $p['city'] ?? $p['district'] ?? $p['county'] ?? '',
+                        'state' => $p['state'] ?? '',
+                        'state_code' => $p['statecode'] ?? '',
+                        'postcode' => $p['postcode'] ?? '',
+                        'country' => $cc,
+                    ];
+                }
+                return $out;
+            } catch (\Throwable $e) {
+                Log::warning('Address suggest failed', ['error' => $e->getMessage()]);
+                return [];
+            }
+        });
+
+        return response()->json(['suggestions' => $suggestions]);
+    }
+
     public function validatePostcode(Request $request): JsonResponse
     {
         $postcode = $request->get('postcode', '');
