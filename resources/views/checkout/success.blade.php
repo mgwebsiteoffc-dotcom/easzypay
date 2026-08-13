@@ -1,31 +1,66 @@
 <?php
 $rStatus = $redirectStatus ?? '';
 $sess    = $session ?? null;
-$pi      = $piId ?? '';
 $oResult = $orderResult ?? null;
 
 $cur = 'USD';
 $amt = 0;
+$sub = 0;
+$ship = 0;
+$disc = 0;
+$items = [];
+$shopName = 'Store';
+$shopUrl = '';
+$logoUrl = null;
+
 if ($sess) {
-    $cur = $sess->charged_currency ?? $sess->currency ?? 'USD';
-    $amt = $sess->charged_amount ?? $sess->subtotal ?? 0;
+    $cur  = strtoupper($sess->charged_currency ?? $sess->currency ?? 'USD');
+    $amt  = (int) ($sess->charged_amount ?? $sess->total_amount ?? $sess->subtotal ?? 0);
+    $sub  = (int) ($sess->subtotal ?? 0);
+    $ship = (int) ($sess->shipping_amount ?? 0);
+    $disc = (int) ($sess->discount_amount ?? 0);
+    $items = is_array($sess->items) ? $sess->items : [];
+    if ($sess->store_id) {
+        $store = \App\Models\Store::find($sess->store_id);
+        $shopName = $store->shop_name ?? $shopName;
+        $logoUrl = $store->checkout_logo ?? null;
+    }
+    $shopUrl = $sess->shop_domain ? ('https://' . $sess->shop_domain) : '';
 }
 
-$symbols = ['USD'=>'$','GBP'=>'£','EUR'=>'€','INR'=>'₹','AUD'=>'A$','CAD'=>'CA$','AED'=>'AED ','SGD'=>'S$','JPY'=>'¥','NZD'=>'NZ$'];
-$sym = $symbols[strtoupper($cur)] ?? ($cur.' ');
+$rate = (float) ($sess->exchange_rate ?? 1);
+if ($rate <= 0) $rate = 1;
+$disp = function (int $cents) use ($cur, $rate, $sess) {
+    $symbols = ['USD'=>'$','GBP'=>'£','EUR'=>'€','INR'=>'₹','AUD'=>'A$','CAD'=>'CA$','AED'=>'AED ','SGD'=>'S$','JPY'=>'¥','NZD'=>'NZ$'];
+    $sym = $symbols[$cur] ?? ($cur . ' ');
+    $val = $cents;
+    $shopCur = strtoupper($sess->currency ?? $cur);
+    if ($shopCur !== $cur && $rate != 1.0) {
+        $val = (int) round($cents * $rate);
+    }
+    return $sym . number_format($val / 100, 2);
+};
 
-$redirectUrl = null;
-
-if ($sess && !empty($sess->shopify_thank_you_url)) {
-    $redirectUrl = $sess->shopify_thank_you_url;
-} elseif ($oResult && !empty($oResult['thank_you_url'])) {
-    $redirectUrl = $oResult['thank_you_url'];
-} elseif ($oResult && !empty($oResult['order']['order_status_url'])) {
-    $redirectUrl = $oResult['order']['order_status_url'];
-} elseif ($sess && $sess->shopify_order_id && $sess->shop_domain) {
-    $redirectUrl = "https://{$sess->shop_domain}/account/orders/{$sess->shopify_order_id}";
-} elseif ($sess && $sess->shop_domain) {
-    $redirectUrl = "https://{$sess->shop_domain}";
+$first = trim((string) ($sess->customer_first_name ?? ''));
+$last  = trim((string) ($sess->customer_last_name ?? ''));
+$name  = trim($first . ' ' . $last) ?: 'there';
+$email = trim((string) ($sess->customer_email ?? ''));
+$phone = trim((string) ($sess->customer_phone ?? ''));
+$orderNo = $sess->shopify_order_number ?? null;
+$shipTitle = trim((string) ($sess->referrer ?? '')) ?: 'Standard Shipping';
+$addr = array_filter([
+    $sess->shipping_address1 ?? '',
+    $sess->shipping_address2 ?? '',
+    trim(($sess->shipping_city ?? '') . (($sess->shipping_state ?? '') ? ', ' . $sess->shipping_state : '') . ' ' . ($sess->shipping_zip ?? '')),
+    $sess->shipping_country ?? '',
+]);
+$payLabel = '';
+if ($sess && $sess->card_brand && $sess->card_last4) {
+    $payLabel = strtoupper($sess->card_brand) . ' ending with ' . $sess->card_last4;
+} elseif ($sess && $sess->wallet_type && $sess->wallet_type !== 'card') {
+    $payLabel = ucfirst($sess->wallet_type);
+} else {
+    $payLabel = 'Card';
 }
 ?>
 <!DOCTYPE html>
@@ -33,231 +68,222 @@ if ($sess && !empty($sess->shopify_thank_you_url)) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Thank You — Order Confirmed</title>
-
-<?php if ($rStatus === 'succeeded' && $redirectUrl): ?>
-<meta http-equiv="refresh" content="0;url=<?php echo htmlspecialchars($redirectUrl); ?>">
-<?php endif; ?>
-
+<title>Thank you<?php echo $orderNo ? ' — ' . htmlspecialchars($orderNo) : ''; ?></title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { min-height: 100%; }
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: radial-gradient(circle at top left, rgba(59, 130, 246, 0.18), transparent 23%),
-                radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.16), transparent 20%),
-                #050816;
-    color: #f8fafc;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f5f5f5;
+    color: #1a1a1a;
+    min-height: 100vh;
 }
-.page-shell {
-    width: 100%;
-    max-width: 560px;
+.hdr {
+    background: #fff;
+    border-bottom: 1px solid #e6e6e6;
+    padding: 16px 24px;
 }
-.card {
-    background: rgba(15, 23, 42, 0.96);
-    border: 1px solid rgba(148, 163, 184, 0.14);
-    border-radius: 28px;
-    box-shadow: 0 24px 68px rgba(15, 23, 42, 0.35);
-    overflow: hidden;
-}
-.card-header {
-    padding: 40px 32px 26px;
-    text-align: center;
-    background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(15, 23, 42, 0.88));
-}
-.icon {
-    width: 96px;
-    height: 96px;
-    margin: 0 auto 22px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, #34d399, #38bdf8);
-    display: grid;
-    place-items: center;
-    font-size: 42px;
-    color: #ffffff;
-}
-h1 {
-    font-size: 28px;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    margin-bottom: 12px;
-}
-.sub {
-    color: #cbd5e1;
-    font-size: 15px;
-    line-height: 1.75;
-    max-width: 460px;
+.hdr-inner {
+    max-width: 1100px;
     margin: 0 auto;
+    font-weight: 700;
+    font-size: 18px;
 }
-.card-body {
-    padding: 26px 28px 34px;
+.hdr-inner img { max-height: 32px; }
+.wrap {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+    min-height: calc(100vh - 64px);
 }
-.detail-box {
-    background: rgba(148, 163, 184, 0.06);
-    border: 1px solid rgba(148, 163, 184, 0.10);
-    border-radius: 20px;
-    padding: 22px 18px;
-    margin-top: 24px;
+@media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+.left { padding: 40px 40px 64px; }
+.right {
+    background: #eee;
+    padding: 40px 32px 64px;
+    border-left: 1px solid #e0e0e0;
 }
-.detail-row {
+@media (max-width: 860px) {
+    .left, .right { padding: 24px; }
+    .right { border-left: none; border-top: 1px solid #e0e0e0; }
+}
+.thanks {
     display: flex;
-    justify-content: space-between;
-    gap: 14px;
-    padding: 14px 0;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.08);
-    font-size: 14px;
+    gap: 16px;
+    align-items: flex-start;
+    margin-bottom: 28px;
 }
-.detail-row:last-child { border-bottom: none; }
-.detail-row .label { color: #94a3b8; }
-.detail-row .value { color: #fff; font-weight: 700; text-align: right; }
-.value.amt { color: #34d399; font-size: 16px; }
+.check {
+    width: 48px; height: 48px; flex-shrink: 0;
+    border: 2px solid #1a1a1a; border-radius: 50%;
+    display: grid; place-items: center; font-size: 22px;
+}
+h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.03em; }
+.muted { color: #616161; font-size: 14px; line-height: 1.6; margin-top: 4px; }
+.panel {
+    background: #fff;
+    border: 1px solid #e6e6e6;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+}
+.panel h2 { font-size: 16px; margin-bottom: 12px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+.k { color: #616161; font-size: 13px; margin-bottom: 4px; }
+.v { font-size: 14px; line-height: 1.5; }
 .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    padding: 16px;
-    margin-top: 26px;
-    border-radius: 18px;
-    border: none;
-    background: #f8fafc;
-    color: #0f172a;
-    font-weight: 700;
-    font-size: 15px;
-    letter-spacing: 0.02em;
-    text-decoration: none;
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: #1a1a1a; color: #fff; text-decoration: none;
+    padding: 14px 22px; border-radius: 8px; font-weight: 650; font-size: 14px;
 }
-.btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 16px 30px rgba(15, 23, 42, 0.18);
+.item { display: flex; gap: 12px; margin-bottom: 16px; align-items: flex-start; }
+.thumb {
+    width: 64px; height: 64px; border-radius: 8px; object-fit: cover;
+    background: #fff; border: 1px solid #ddd; position: relative;
 }
-.redirect-note {
-    margin-top: 24px;
-    padding: 16px 18px;
-    border-radius: 16px;
-    background: rgba(59, 130, 246, 0.12);
-    border: 1px solid rgba(148, 163, 184, 0.14);
-    color: #cbd5e1;
-    font-size: 14px;
-    line-height: 1.7;
+.qty {
+    position: absolute; top: -8px; right: -8px;
+    background: #616161; color: #fff; border-radius: 50%;
+    min-width: 20px; height: 20px; font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
 }
-.countdown {
-    color: #fff;
-    font-weight: 700;
-}
-.note {
-    margin-top: 18px;
-    color: #94a3b8;
-    font-size: 13px;
-    line-height: 1.75;
-}
+.iname { font-size: 14px; font-weight: 600; }
+.ivar { color: #616161; font-size: 13px; }
+.iprice { margin-left: auto; font-size: 14px; white-space: nowrap; }
+.row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+.row.total { font-size: 20px; font-weight: 700; padding-top: 12px; border-top: 1px solid #ddd; margin-top: 8px; }
+.cur { color: #757575; font-size: 12px; font-weight: 500; margin-right: 6px; }
+.wait { color: #616161; font-size: 14px; }
 </style>
 </head>
 <body>
-<div class="page-shell">
+<header class="hdr">
+    <div class="hdr-inner">
+        <?php if ($logoUrl): ?>
+            <img src="<?php echo htmlspecialchars($logoUrl); ?>" alt="<?php echo htmlspecialchars($shopName); ?>">
+        <?php else: ?>
+            <?php echo htmlspecialchars($shopName); ?>
+        <?php endif; ?>
+    </div>
+</header>
+
 <?php if ($rStatus === 'succeeded'): ?>
-    <div class="card">
-        <div class="card-header">
-            <div class="icon">✓</div>
-            <h1>Order confirmed</h1>
-            <?php if ($sess && $sess->shopify_order_number): ?>
-                <p class="sub">Order <strong><?php echo htmlspecialchars($sess->shopify_order_number); ?></strong> has been placed successfully. Redirecting you to the Shopify order page.</p>
-            <?php else: ?>
-                <p class="sub">Your payment was successful. We’re finalizing your order and creating your Shopify confirmation.</p>
-            <?php endif; ?>
+<div class="wrap">
+    <div class="left">
+        <div class="thanks">
+            <div class="check">✓</div>
+            <div>
+                <?php if ($orderNo): ?>
+                    <div class="muted">Order <?php echo htmlspecialchars($orderNo); ?></div>
+                <?php endif; ?>
+                <h1>Thank you, <?php echo htmlspecialchars($first ?: $name); ?>!</h1>
+                <p class="muted">
+                    <?php if ($email): ?>
+                        Your order is confirmed. You’ll receive an email confirmation at <strong><?php echo htmlspecialchars($email); ?></strong>.
+                    <?php else: ?>
+                        Your order is confirmed. A receipt has been sent if an email was provided.
+                    <?php endif; ?>
+                </p>
+            </div>
         </div>
 
-        <div class="card-body">
-            <div class="detail-box">
-                <?php if ($amt > 0): ?>
-                    <div class="detail-row">
-                        <span class="label">Amount paid</span>
-                        <span class="value amt"><?php echo $sym . number_format($amt / 100, 2); ?></span>
+        <div class="panel">
+            <h2>Order details</h2>
+            <div class="grid2">
+                <div>
+                    <div class="k">Contact information</div>
+                    <div class="v">
+                        <?php echo htmlspecialchars($email ?: '—'); ?><br>
+                        <?php if ($phone) echo htmlspecialchars($phone); ?>
                     </div>
+                </div>
+                <div>
+                    <div class="k">Payment method</div>
+                    <div class="v"><?php echo htmlspecialchars($payLabel); ?> — <?php echo $disp($amt > 0 ? ($cur === strtoupper($sess->currency ?? $cur) ? ($sub - $disc + $ship) : $amt) : $amt); ?></div>
+                </div>
+                <div>
+                    <div class="k">Shipping address</div>
+                    <div class="v">
+                        <?php echo htmlspecialchars($name); ?><br>
+                        <?php foreach ($addr as $line): ?>
+                            <?php echo htmlspecialchars($line); ?><br>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <div>
+                    <div class="k">Shipping method</div>
+                    <div class="v"><?php echo htmlspecialchars($shipTitle); ?></div>
+                    <div class="k" style="margin-top:14px;">Billing address</div>
+                    <div class="v">Same as shipping address</div>
+                </div>
+            </div>
+        </div>
+
+        <?php if ($shopUrl): ?>
+            <a class="btn" href="<?php echo htmlspecialchars($shopUrl); ?>">Continue shopping</a>
+        <?php endif; ?>
+    </div>
+
+    <aside class="right">
+        <?php foreach ($items as $item):
+            $pr = (int) ($item['price'] ?? $item['price_cents'] ?? 0);
+            $qt = max(1, (int) ($item['quantity'] ?? 1));
+            $vt = trim($item['variant_title'] ?? '');
+        ?>
+        <div class="item">
+            <div style="position:relative;flex-shrink:0;">
+                <?php if (!empty($item['image'])): ?>
+                    <img class="thumb" src="<?php echo htmlspecialchars($item['image']); ?>" alt="">
+                <?php else: ?>
+                    <div class="thumb"></div>
                 <?php endif; ?>
-                <?php if ($sess && $sess->shopify_order_number): ?>
-                    <div class="detail-row">
-                        <span class="label">Order number</span>
-                        <span class="value"><?php echo htmlspecialchars($sess->shopify_order_number); ?></span>
-                    </div>
-                <?php endif; ?>
-                <?php if ($sess && $sess->customer_email): ?>
-                    <div class="detail-row">
-                        <span class="label">Email</span>
-                        <span class="value"><?php echo htmlspecialchars($sess->customer_email); ?></span>
-                    </div>
-                <?php endif; ?>
-                <?php if ($sess && $sess->card_brand && $sess->card_last4): ?>
-                    <div class="detail-row">
-                        <span class="label">Payment method</span>
-                        <span class="value"><?php echo strtoupper($sess->card_brand); ?> •••• <?php echo htmlspecialchars($sess->card_last4); ?></span>
-                    </div>
+                <span class="qty"><?php echo $qt; ?></span>
+            </div>
+            <div>
+                <div class="iname"><?php echo htmlspecialchars($item['title'] ?? 'Product'); ?></div>
+                <?php if ($vt && strtolower($vt) !== 'default title'): ?>
+                    <div class="ivar"><?php echo htmlspecialchars($vt); ?></div>
                 <?php endif; ?>
             </div>
-
-            <?php if ($redirectUrl): ?>
-                <div class="redirect-note">
-                    Redirecting you to your order page in <span class="countdown" id="cd">3</span> seconds.
-                </div>
-                <a href="<?php echo htmlspecialchars($redirectUrl); ?>" class="btn">View order</a>
-            <?php elseif ($sess && $sess->shop_domain): ?>
-                <a href="https://<?php echo htmlspecialchars($sess->shop_domain); ?>" class="btn">Continue shopping</a>
-            <?php endif; ?>
-
-            <p class="note">If the page does not redirect automatically, use the button above. Please keep this window open while your order is confirmed.</p>
+            <div class="iprice"><?php echo $disp($pr * $qt); ?></div>
         </div>
-    </div>
+        <?php endforeach; ?>
 
-    <?php if ($redirectUrl): ?>
-        <script>
-        (function() {
-            var url = '<?php echo addslashes($redirectUrl); ?>';
-            var counter = 3;
-            var el = document.getElementById('cd');
-
-            var timer = setInterval(function() {
-                counter -= 1;
-                if (el) el.textContent = counter > 0 ? counter : '0';
-                if (counter <= 0) {
-                    clearInterval(timer);
-                    window.location.href = url;
-                }
-            }, 1000);
-
-            setTimeout(function() {
-                window.location.href = url;
-            }, 3500);
-        })();
-        </script>
-    <?php endif; ?>
+        <div class="row"><span>Subtotal</span><span><?php echo $disp($sub); ?></span></div>
+        <?php if ($disc > 0): ?>
+            <div class="row"><span>Discount<?php echo $sess->discount_code ? ' (' . htmlspecialchars($sess->discount_code) . ')' : ''; ?></span><span>−<?php echo $disp($disc); ?></span></div>
+        <?php endif; ?>
+        <div class="row"><span>Shipping</span><span><?php echo $ship > 0 ? $disp($ship) : 'Free'; ?></span></div>
+        <div class="row total">
+            <span>Total</span>
+            <span><span class="cur"><?php echo htmlspecialchars($cur); ?></span><?php
+                $shown = $amt;
+                if ($shown <= 0) $shown = max(0, $sub - $disc + $ship);
+                echo $disp($cur === strtoupper((string) ($sess->currency ?? $cur)) ? max(0, $sub - $disc + $ship) : $shown);
+            ?></span>
+        </div>
+    </aside>
+</div>
 
 <?php elseif ($rStatus === 'failed' || $rStatus === 'canceled'): ?>
-    <div class="card">
-        <div class="card-header">
-            <div class="icon" style="background:#ef4444;">✕</div>
+<div class="left" style="max-width:640px;margin:60px auto;">
+    <div class="thanks">
+        <div class="check" style="border-color:#d72c0d;color:#d72c0d;">✕</div>
+        <div>
             <h1>Payment failed</h1>
-            <p class="sub">Your payment could not be processed. No charges were made.</p>
-        </div>
-        <div class="card-body">
-            <a href="javascript:history.back()" class="btn">Try again</a>
+            <p class="muted">Your payment could not be processed. No charges were made.</p>
+            <a class="btn" href="javascript:history.back()" style="margin-top:20px;">Try again</a>
         </div>
     </div>
+</div>
 
 <?php else: ?>
-    <div class="card">
-        <div class="card-header">
-            <div class="icon" style="background:#f59e0b;">⏳</div>
-            <h1>Processing</h1>
-            <p class="sub">Please wait while we confirm your payment. This page will refresh shortly.</p>
-        </div>
-    </div>
-    <script>setTimeout(function(){ location.reload(); }, 3000);</script>
-<?php endif; ?>
+<div class="left" style="max-width:640px;margin:60px auto;">
+    <h1>Processing</h1>
+    <p class="wait">Please wait while we confirm your payment…</p>
 </div>
+<script>setTimeout(function(){ location.reload(); }, 2500);</script>
+<?php endif; ?>
 </body>
 </html>
