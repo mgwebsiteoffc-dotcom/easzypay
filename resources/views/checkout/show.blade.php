@@ -1553,8 +1553,10 @@ async function fetchAddressSuggestions(q) {
             el.addEventListener('click', async function() {
                 $('a1').value = s.line1 || s.label;
                 floatLabel($('a1'));
-                if (s.country && $('country') && $('country').value !== s.country) {
-                    $('country').value = s.country;
+                if (s.country && $('country')) {
+                    if ($('country').value !== s.country) {
+                        $('country').value = s.country;
+                    }
                     await loadStates(s.country);
                 }
                 applyPlace({

@@ -22,6 +22,8 @@ class InstallController extends Controller
         'read_discounts', 'write_discounts',
         'read_themes', 'write_themes',
         'read_shipping',
+        'write_draft_orders',
+        'read_draft_orders',
     ];
 
     public function install(Request $request)
