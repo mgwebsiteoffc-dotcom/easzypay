@@ -587,6 +587,13 @@ GQL;
         $rates = array_merge($rates, $this->shippingRatesFromDeliveryProfiles($countryCode, $provinceCode, $subtotalCents));
         $rates = array_merge($rates, $this->shippingRatesFromZones($countryCode, $provinceCode, $subtotalCents));
 
+        if (empty($rates)) {
+            $rates = array_merge(
+                $this->shippingRatesFromDeliveryProfiles($countryCode, $provinceCode, $subtotalCents, true),
+                $this->shippingRatesFromZones('*', null, $subtotalCents)
+            );
+        }
+
         $unique = [];
         $out = [];
         foreach ($rates as $rate) {
@@ -700,20 +707,22 @@ GQL;
         }
     }
 
-    private function shippingRatesFromDeliveryProfiles(string $countryCode, ?string $provinceCode, int $subtotalCents): array
+    private function shippingRatesFromDeliveryProfiles(string $countryCode, ?string $provinceCode, int $subtotalCents, bool $includeAll = false): array
     {
         $query = <<<'GQL'
         {
-            deliveryProfiles(first: 10) {
+            deliveryProfiles(first: 5) {
                 nodes {
                     profileLocationGroups {
-                        locationGroupZones(first: 30) {
+                        locationGroupZones(first: 20) {
                             nodes {
                                 zone {
                                     name
                                     countries {
-                                        code { countryCode }
-                                        restOfWorld
+                                        code {
+                                            countryCode
+                                            restOfWorld
+                                        }
                                         provinces { code }
                                     }
                                 }
@@ -748,15 +757,15 @@ GQL;
             $json = $response->json() ?? [];
             if (!empty($json['errors'])) {
                 Log::warning('deliveryProfiles errors', ['errors' => $json['errors']]);
+                return $this->shippingRatesFromDeliveryProfilesSimple();
             }
 
-            $rates = [];
+            $matched = [];
+            $all = [];
             foreach (($json['data']['deliveryProfiles']['nodes'] ?? []) as $profile) {
                 foreach (($profile['profileLocationGroups'] ?? []) as $group) {
                     foreach (($group['locationGroupZones']['nodes'] ?? []) as $zoneNode) {
-                        if (!$this->deliveryZoneMatches($zoneNode['zone'] ?? [], $countryCode, $provinceCode)) {
-                            continue;
-                        }
+                        $zoneMatches = $includeAll || $this->deliveryZoneMatches($zoneNode['zone'] ?? [], $countryCode, $provinceCode);
                         foreach (($zoneNode['methodDefinitions']['nodes'] ?? []) as $method) {
                             if (isset($method['active']) && !$method['active']) {
                                 continue;
@@ -765,11 +774,79 @@ GQL;
                             if (($provider['__typename'] ?? '') !== 'DeliveryRateDefinition') {
                                 continue;
                             }
-                            $amount = (float) ($provider['price']['amount'] ?? 0);
+                            $row = [
+                                'title' => $method['name'] ?? 'Shipping',
+                                'code' => strtolower(str_replace(' ', '_', $method['name'] ?? 'shipping')),
+                                'price' => (int) round(((float) ($provider['price']['amount'] ?? 0)) * 100),
+                            ];
+                            $all[] = $row;
+                            if ($zoneMatches) {
+                                $matched[] = $row;
+                            }
+                        }
+                    }
+                }
+            }
+            return !empty($matched) ? $matched : $all;
+        } catch (\Throwable $e) {
+            Log::warning('deliveryProfiles failed', ['error' => $e->getMessage()]);
+            return $this->shippingRatesFromDeliveryProfilesSimple();
+        }
+    }
+
+    private function shippingRatesFromDeliveryProfilesSimple(): array
+    {
+        $query = <<<'GQL'
+        {
+            deliveryProfiles(first: 5) {
+                nodes {
+                    profileLocationGroups {
+                        locationGroupZones(first: 20) {
+                            nodes {
+                                methodDefinitions(first: 20) {
+                                    nodes {
+                                        name
+                                        active
+                                        rateProvider {
+                                            __typename
+                                            ... on DeliveryRateDefinition {
+                                                price { amount }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+GQL;
+        try {
+            $response = Http::withHeaders([
+                'X-Shopify-Access-Token' => $this->accessToken,
+                'Content-Type' => 'application/json',
+            ])->timeout(20)->post(
+                "https://{$this->shopDomain}/admin/api/{$this->apiVersion}/graphql.json",
+                ['query' => $query]
+            );
+            $json = $response->json() ?? [];
+            $rates = [];
+            foreach (($json['data']['deliveryProfiles']['nodes'] ?? []) as $profile) {
+                foreach (($profile['profileLocationGroups'] ?? []) as $group) {
+                    foreach (($group['locationGroupZones']['nodes'] ?? []) as $zoneNode) {
+                        foreach (($zoneNode['methodDefinitions']['nodes'] ?? []) as $method) {
+                            if (isset($method['active']) && !$method['active']) {
+                                continue;
+                            }
+                            $provider = $method['rateProvider'] ?? [];
+                            if (($provider['__typename'] ?? '') !== 'DeliveryRateDefinition') {
+                                continue;
+                            }
                             $rates[] = [
                                 'title' => $method['name'] ?? 'Shipping',
                                 'code' => strtolower(str_replace(' ', '_', $method['name'] ?? 'shipping')),
-                                'price' => (int) round($amount * 100),
+                                'price' => (int) round(((float) ($provider['price']['amount'] ?? 0)) * 100),
                             ];
                         }
                     }
@@ -777,7 +854,6 @@ GQL;
             }
             return $rates;
         } catch (\Throwable $e) {
-            Log::warning('deliveryProfiles failed', ['error' => $e->getMessage()]);
             return [];
         }
     }
@@ -789,10 +865,11 @@ GQL;
             return true;
         }
         foreach ($countries as $country) {
-            if (!empty($country['restOfWorld'])) {
+            $codeObj = is_array($country['code'] ?? null) ? $country['code'] : [];
+            if (!empty($country['restOfWorld']) || !empty($codeObj['restOfWorld'])) {
                 return true;
             }
-            $code = strtoupper((string) ($country['code']['countryCode'] ?? $country['code'] ?? ''));
+            $code = strtoupper((string) ($codeObj['countryCode'] ?? (is_string($country['code'] ?? null) ? $country['code'] : '')));
             if ($code === '' || $code === '*' || $code === $countryCode) {
                 $provinces = $country['provinces'] ?? [];
                 if (empty($provinces) || empty($provinceCode)) {

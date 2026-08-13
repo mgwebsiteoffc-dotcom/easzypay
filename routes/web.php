@@ -133,12 +133,28 @@ Route::prefix('api')->group(function () {
         }
         $shopify = new \App\Services\ShopifyService($store->myshopify_domain, $store->access_token);
         $subtotal = (int) ($session->subtotal ?? 0);
+        $items = $session->items ?? [];
+        if (is_string($items)) {
+            $items = json_decode($items, true) ?? [];
+        }
         $quote = $shopify->getShippingRates($country, $state, $subtotal, [
-            'items' => is_array($session->items) ? $session->items : [],
+            'items' => is_array($items) ? $items : [],
             'zip' => (string) $request->get('zip', ''),
             'city' => (string) $request->get('city', ''),
         ]);
-        return response()->json($quote + ['rates' => $quote['rates'] ?? []]);
+        $rates = $quote['rates'] ?? [];
+        if (empty($rates)) {
+            $rates = [[
+                'title' => 'Standard Shipping',
+                'code' => 'standard',
+                'price' => 0,
+            ]];
+        }
+        return response()->json([
+            'rates' => $rates,
+            'tax_amount' => $quote['tax_amount'] ?? 0,
+            'duties_amount' => $quote['duties_amount'] ?? 0,
+        ]);
     });
 });
 
