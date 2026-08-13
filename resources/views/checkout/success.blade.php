@@ -36,7 +36,7 @@ if ($sess && !empty($sess->shopify_thank_you_url)) {
 <title>Thank You — Order Confirmed</title>
 
 <?php if ($rStatus === 'succeeded' && $redirectUrl): ?>
-<meta http-equiv="refresh" content="3;url=<?php echo htmlspecialchars($redirectUrl); ?>">
+<meta http-equiv="refresh" content="0;url=<?php echo htmlspecialchars($redirectUrl); ?>">
 <?php endif; ?>
 
 <style>

@@ -97,6 +97,224 @@ class ShopifyService
         }
     }
 
+    public function getShopPolicies(): array
+    {
+        $policies = [
+            'shipping' => null,
+            'refund'   => null,
+            'privacy'  => null,
+            'terms'    => null,
+        ];
+
+        try {
+            $shop = $this->getShopInfo();
+            if (is_array($shop)) {
+                $policies['shipping'] = $shop['shipping_policy']['url'] ?? $shop['shipping_policy_url'] ?? null;
+                $policies['refund']   = $shop['refund_policy']['url'] ?? $shop['refund_policy_url'] ?? null;
+                $policies['privacy']  = $shop['privacy_policy']['url'] ?? $shop['privacy_policy_url'] ?? null;
+                $policies['terms']    = $shop['terms_of_service']['url'] ?? $shop['terms_of_service_url'] ?? null;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('getShopPolicies shop.json failed', ['error' => $e->getMessage()]);
+        }
+
+        try {
+            $data = $this->rest('GET', 'policies.json');
+            foreach (($data['policies'] ?? []) as $policy) {
+                $url = $policy['url'] ?? null;
+                $handle = strtolower((string) ($policy['handle'] ?? $policy['title'] ?? ''));
+                if (str_contains($handle, 'shipping')) {
+                    $policies['shipping'] = $policies['shipping'] ?: $url;
+                }
+                if (str_contains($handle, 'refund') || str_contains($handle, 'return')) {
+                    $policies['refund'] = $policies['refund'] ?: $url;
+                }
+                if (str_contains($handle, 'privacy')) {
+                    $policies['privacy'] = $policies['privacy'] ?: $url;
+                }
+                if (str_contains($handle, 'term')) {
+                    $policies['terms'] = $policies['terms'] ?: $url;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('getShopPolicies policies.json failed', ['error' => $e->getMessage()]);
+        }
+
+        $base = 'https://' . $this->shopDomain;
+        $policies['shipping'] = $policies['shipping'] ?: $base . '/policies/shipping-policy';
+        $policies['refund']   = $policies['refund'] ?: $base . '/policies/refund-policy';
+        $policies['privacy']  = $policies['privacy'] ?: $base . '/policies/privacy-policy';
+        $policies['terms']    = $policies['terms'] ?: $base . '/policies/terms-of-service';
+
+        return $policies;
+    }
+
+    public function lookupDiscountCode(string $code, int $subtotalCents): array
+    {
+        $code = trim($code);
+        if ($code === '') {
+            return ['valid' => false, 'error' => 'Empty code'];
+        }
+
+        try {
+            $lookup = Http::withHeaders([
+                'X-Shopify-Access-Token' => $this->accessToken,
+            ])->timeout(15)->get(
+                "https://{$this->shopDomain}/admin/api/{$this->apiVersion}/discount_codes/lookup.json",
+                ['code' => $code]
+            );
+
+            if ($lookup->status() === 404 || !$lookup->ok()) {
+                return ['valid' => false, 'error' => 'Invalid discount code'];
+            }
+
+            $discount = $lookup->json('discount_code');
+            $priceRuleId = $discount['price_rule_id'] ?? null;
+            if (!$priceRuleId) {
+                return ['valid' => false, 'error' => 'Invalid discount code'];
+            }
+
+            $ruleRes = Http::withHeaders([
+                'X-Shopify-Access-Token' => $this->accessToken,
+            ])->timeout(15)->get(
+                "https://{$this->shopDomain}/admin/api/{$this->apiVersion}/price_rules/{$priceRuleId}.json"
+            );
+
+            if (!$ruleRes->ok()) {
+                return ['valid' => false, 'error' => 'Could not load discount'];
+            }
+
+            $rule = $ruleRes->json('price_rule') ?? [];
+            $now = now();
+            if (!empty($rule['starts_at']) && $now->lt($rule['starts_at'])) {
+                return ['valid' => false, 'error' => 'Discount code is not active yet'];
+            }
+            if (!empty($rule['ends_at']) && $now->gt($rule['ends_at'])) {
+                return ['valid' => false, 'error' => 'Discount code expired'];
+            }
+
+            $valueType = $rule['value_type'] ?? 'percentage';
+            $value = (float) ($rule['value'] ?? 0);
+            $abs = abs($value);
+            $freeShipping = ($rule['target_type'] ?? '') === 'shipping_line';
+
+            if ($freeShipping) {
+                return [
+                    'valid' => true,
+                    'code' => $code,
+                    'title' => $rule['title'] ?? $code,
+                    'discount_percent' => 0,
+                    'discount_amount' => 0,
+                    'free_shipping' => true,
+                ];
+            }
+
+            $discountPercent = 0;
+            $discountAmount = 0;
+            if ($valueType === 'percentage') {
+                $discountPercent = $abs;
+                $discountAmount = (int) round($subtotalCents * ($discountPercent / 100));
+            } else {
+                $discountAmount = (int) round($abs * 100);
+            }
+
+            return [
+                'valid' => true,
+                'code' => $code,
+                'title' => $rule['title'] ?? $code,
+                'discount_percent' => $discountPercent,
+                'discount_amount' => $discountAmount,
+                'free_shipping' => false,
+            ];
+        } catch (\Throwable $e) {
+            Log::error('lookupDiscountCode failed', ['error' => $e->getMessage()]);
+            return ['valid' => false, 'error' => 'Validation failed'];
+        }
+    }
+
+    public function getShippingRates(string $countryCode, ?string $provinceCode, int $subtotalCents): array
+    {
+        $countryCode = strtoupper($countryCode);
+        $rates = [];
+
+        try {
+            $data = $this->rest('GET', 'shipping_zones.json');
+            foreach (($data['shipping_zones'] ?? []) as $zone) {
+                $matches = false;
+                foreach (($zone['countries'] ?? []) as $country) {
+                    $code = strtoupper((string) ($country['code'] ?? ''));
+                    if ($code !== '*' && $code !== $countryCode) {
+                        continue;
+                    }
+                    $provinces = $country['provinces'] ?? [];
+                    if (empty($provinces) || empty($provinceCode)) {
+                        $matches = true;
+                        break;
+                    }
+                    foreach ($provinces as $p) {
+                        if (strtoupper((string) ($p['code'] ?? '')) === strtoupper((string) $provinceCode)) {
+                            $matches = true;
+                            break 2;
+                        }
+                    }
+                    $matches = true;
+                }
+
+                if (!$matches) {
+                    continue;
+                }
+
+                $subtotal = $subtotalCents / 100;
+                foreach (($zone['price_based_shipping_rates'] ?? []) as $rate) {
+                    $min = (float) ($rate['min_order_subtotal'] ?? 0);
+                    $max = $rate['max_order_subtotal'] !== null ? (float) $rate['max_order_subtotal'] : null;
+                    if ($subtotal < $min) {
+                        continue;
+                    }
+                    if ($max !== null && $subtotal > $max) {
+                        continue;
+                    }
+                    $rates[] = [
+                        'title' => $rate['name'] ?? 'Shipping',
+                        'code'  => strtolower(str_replace(' ', '_', $rate['name'] ?? 'shipping')),
+                        'price' => (int) round(((float) ($rate['price'] ?? 0)) * 100),
+                    ];
+                }
+
+                foreach (($zone['weight_based_shipping_rates'] ?? []) as $rate) {
+                    $rates[] = [
+                        'title' => $rate['name'] ?? 'Shipping',
+                        'code'  => strtolower(str_replace(' ', '_', $rate['name'] ?? 'shipping')),
+                        'price' => (int) round(((float) ($rate['price'] ?? 0)) * 100),
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('getShippingRates failed', ['error' => $e->getMessage()]);
+        }
+
+        if (empty($rates)) {
+            $rates[] = [
+                'title' => 'Standard Shipping',
+                'code'  => 'standard',
+                'price' => 0,
+            ];
+        }
+
+        $unique = [];
+        $out = [];
+        foreach ($rates as $rate) {
+            $key = $rate['title'] . '|' . $rate['price'];
+            if (isset($unique[$key])) {
+                continue;
+            }
+            $unique[$key] = true;
+            $out[] = $rate;
+        }
+
+        return $out;
+    }
+
     // ================================================================
     // Validate Cart Prices
     // ================================================================
@@ -358,12 +576,11 @@ $noteAttributes[] = ['name' => 'Checkout', 'value' => 'EaszyPay'];
                 // Notes for backend reconciliation
                 'note_attributes' => $noteAttributes,
 
-                // Force shipping required
                 'shipping_lines' => [
                     [
-                        'title'  => 'Standard Shipping',
-                        'price'  => '0.00',
-                        'code'   => 'standard',
+                        'title'  => trim((string) ($session->referrer ?? '')) ?: 'Standard Shipping',
+                        'price'  => number_format(max(0, (int) ($session->shipping_amount ?? 0)) / 100, 2, '.', ''),
+                        'code'   => 'easzypay',
                         'source' => 'easzypay',
                     ],
                 ],

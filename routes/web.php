@@ -93,6 +93,47 @@ Route::prefix('api')->group(function () {
     Route::get('/location/states', [\App\Http\Controllers\LocationController::class, 'getStates']);
     Route::get('/location/cities', [\App\Http\Controllers\LocationController::class, 'getCities']);
     Route::get('/location/validate-postcode', [\App\Http\Controllers\LocationController::class, 'validatePostcode']);
+    Route::get('/checkout-policies', function (Request $request) {
+        $sessionId = $request->get('session_id', '');
+        $session = \App\Models\CheckoutSession::where('session_id', $sessionId)->first();
+        $store = null;
+        if ($session && $session->store_id) {
+            $store = \App\Models\Store::find($session->store_id);
+        }
+        if (!$store && $session && $session->shop_domain) {
+            $store = \App\Models\Store::where('myshopify_domain', $session->shop_domain)
+                ->orWhere('shop_domain', $session->shop_domain)->first();
+        }
+        if (!$store || empty($store->access_token)) {
+            return response()->json(['policies' => []]);
+        }
+        $shopify = new \App\Services\ShopifyService($store->myshopify_domain, $store->access_token);
+        return response()->json(['policies' => $shopify->getShopPolicies()]);
+    });
+    Route::get('/shipping-rates', function (Request $request) {
+        $sessionId = $request->get('session_id', '');
+        $country = strtoupper((string) $request->get('country', 'US'));
+        $state = $request->get('state');
+        $session = \App\Models\CheckoutSession::where('session_id', $sessionId)->first();
+        $store = null;
+        if ($session && $session->store_id) {
+            $store = \App\Models\Store::find($session->store_id);
+        }
+        if (!$store && $session && $session->shop_domain) {
+            $store = \App\Models\Store::where('myshopify_domain', $session->shop_domain)
+                ->orWhere('shop_domain', $session->shop_domain)->first();
+        }
+        if (!$store || empty($store->access_token)) {
+            return response()->json(['rates' => [[
+                'title' => 'Standard Shipping',
+                'code' => 'standard',
+                'price' => 0,
+            ]]]);
+        }
+        $shopify = new \App\Services\ShopifyService($store->myshopify_domain, $store->access_token);
+        $subtotal = (int) ($session->subtotal ?? 0);
+        return response()->json(['rates' => $shopify->getShippingRates($country, $state, $subtotal)]);
+    });
 });
 
 Route::post('/api/validate-discount', function (\Illuminate\Http\Request $request) {
@@ -127,177 +168,19 @@ Route::post('/api/validate-discount', function (\Illuminate\Http\Request $reques
     }
 
     try {
-        // Query Shopify for discount code
-        $version = config('services.shopify.api_version', '2026-01');
+        $shopify = new \App\Services\ShopifyService($store->myshopify_domain, $store->access_token);
+        $result = $shopify->lookupDiscountCode($code, (int) ($session->subtotal ?? 0));
 
-        Log::info('Discount validation request', [
-            'code' => $code,
-            'shop_domain' => $shopDomain,
-            'session_id' => $sessionId,
-            'api_version' => $version,
-        ]);
-
-        $queryA = <<<'GQL'
-        query GetDiscountCode($code: String!) {
-            discountNodeByCode(code: $code) {
-                discountCode {
-                    ... on DiscountCodeBasic {
-                        title
-                        summary
-                        status
-                        startsAt
-                        endsAt
-                        customerGets {
-                            value {
-                                ... on DiscountPercentage {
-                                    percentage
-                                }
-                                ... on DiscountAmount {
-                                    amount {
-                                        amount
-                                        currencyCode
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-GQL;
-
-        $queryB = <<<'GQL'
-        query GetDiscountCode($code: String!) {
-            codeDiscountNodeByCode(code: $code) {
-                codeDiscount {
-                    ... on DiscountCodeBasic {
-                        title
-                        summary
-                        status
-                        startsAt
-                        endsAt
-                        customerGets {
-                            value {
-                                ... on DiscountPercentage {
-                                    percentage
-                                }
-                                ... on DiscountAmount {
-                                    amount {
-                                        amount
-                                        currencyCode
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-GQL;
-
-        $response = \Illuminate\Support\Facades\Http::withHeaders([
-            'X-Shopify-Access-Token' => $store->access_token,
-            'Content-Type' => 'application/json',
-        ])->timeout(15)->post(
-            "https://{$store->myshopify_domain}/admin/api/{$version}/graphql.json",
-            ['query' => $queryA, 'variables' => ['code' => $code]]
-        );
-
-        $body = $response->json() ?? [];
-        $data = $body['data']['discountNodeByCode']['discountCode'] ?? null;
-        $errors = $body['errors'] ?? [];
-
-        if (!$response->ok() || !empty($errors) || !$data) {
-            Log::warning('Discount validation attempt A failed', [
-                'code' => $code,
-                'shop_domain' => $shopDomain,
-                'status' => $response->status(),
-                'body' => $body,
-                'errors' => $errors,
-            ]);
-        }
-
-        if (!$data) {
-            // Try legacy query if the current one doesn't work.
-            $response = \Illuminate\Support\Facades\Http::withHeaders([
-                'X-Shopify-Access-Token' => $store->access_token,
-                'Content-Type' => 'application/json',
-            ])->timeout(15)->post(
-                "https://{$store->myshopify_domain}/admin/api/{$version}/graphql.json",
-                ['query' => $queryB, 'variables' => ['code' => $code]]
-            );
-
-            $body = $response->json() ?? [];
-            $data = $body['data']['codeDiscountNodeByCode']['codeDiscount'] ?? null;
-            $errors = array_merge($errors, $body['errors'] ?? []);
-
-            if (!$response->ok() || !empty($errors) || !$data) {
-                Log::warning('Discount validation attempt B failed', [
-                    'code' => $code,
-                    'shop_domain' => $shopDomain,
-                    'status' => $response->status(),
-                    'body' => $body,
-                    'errors' => $errors,
-                ]);
-            }
-        }
-
-        if (!$response->ok()) {
-            $message = 'Could not validate code';
-            if (!empty($errors)) {
-                $message .= ': ' . ($errors[0]['message'] ?? json_encode($errors));
-            }
-            return response()->json(['valid' => false, 'error' => $message]);
-        }
-
-        if (!$data) {
-            Log::warning('Discount validation failed: no data returned', [
-                'code' => $code,
-                'shop_domain' => $shopDomain,
-            ]);
-            return response()->json(['valid' => false, 'error' => 'Invalid discount code']);
-        }
-
-        if (($data['status'] ?? '') !== 'ACTIVE') {
-            Log::warning('Discount validation failed: inactive status', [
-                'code' => $code,
-                'shop_domain' => $shopDomain,
-                'status' => $data['status'] ?? null,
-            ]);
-            return response()->json(['valid' => false, 'error' => 'Discount code expired']);
-        }
-
-        $value = $data['customerGets']['value'] ?? [];
-        $discountPercent = 0;
-        $discountAmount  = 0;
-
-        if (!empty($value['percentage'])) {
-            $discountPercent = (float) $value['percentage'];
-            if ($discountPercent > 0 && $discountPercent < 1) {
-                $discountPercent *= 100;
-            }
-            $discountAmount = (int) round(($session->subtotal ?? 0) * ($discountPercent / 100));
-        } elseif (!empty($value['amount']['amount'])) {
-            $discountAmount = (int) round((float) $value['amount']['amount'] * 100);
-        }
-
-        if ($session) {
+        if (!empty($result['valid']) && $session) {
             $session->update([
-                'discount_code'   => $code,
-                'discount_percent'=> $discountPercent,
-                'discount_amount' => $discountAmount,
-                'total_amount'    => max(0, (int) ($session->subtotal ?? 0) - $discountAmount),
+                'discount_code'    => $code,
+                'discount_percent' => (int) ($result['discount_percent'] ?? 0),
+                'discount_amount'  => (int) ($result['discount_amount'] ?? 0),
+                'total_amount'     => max(0, (int) ($session->subtotal ?? 0) - (int) ($result['discount_amount'] ?? 0)),
             ]);
         }
 
-        return response()->json([
-            'valid'             => true,
-            'code'              => $code,
-            'title'             => $data['title'] ?? $code,
-            'discount_percent'  => $discountPercent,
-            'discount_amount'   => $discountAmount,
-        ]);
-
+        return response()->json($result);
     } catch (\Throwable $e) {
         \Illuminate\Support\Facades\Log::error('Discount validation error', ['error' => $e->getMessage()]);
         return response()->json(['valid' => false, 'error' => 'Validation failed: ' . $e->getMessage()]);

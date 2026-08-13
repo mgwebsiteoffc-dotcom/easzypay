@@ -236,6 +236,14 @@ public function success(Request $request)
         }
     }
 
+    $thankYou = $session->shopify_thank_you_url
+        ?? ($orderResult['thank_you_url'] ?? null)
+        ?? ($orderResult['order']['order_status_url'] ?? null);
+
+    if ($redirectStatus === 'succeeded' && !empty($thankYou)) {
+        return redirect()->away($thankYou);
+    }
+
     return view('checkout.success', [
         'session'        => $session,
         'paymentData'    => $paymentData,

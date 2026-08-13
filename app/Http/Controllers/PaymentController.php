@@ -29,6 +29,8 @@ class PaymentController extends Controller
             $email            = $data['email'] ?? null;
             $shipping         = $data['shipping'] ?? null;
             $billing          = $data['billing'] ?? null;
+            $shippingAmount   = isset($data['shipping_amount']) ? (int) $data['shipping_amount'] : null;
+            $shippingTitle    = trim((string) ($data['shipping_title'] ?? ''));
 
             // Find session
             $session = CheckoutSession::where('session_id', $sessionId)->active()->first();
@@ -122,7 +124,7 @@ class PaymentController extends Controller
                         }
 
                         // Update session
-                        $this->updateSession($session, $email, $shipping, $billing, $amount, $currency, $exchangeRate, $detectedCurrency);
+                        $this->updateSession($session, $email, $shipping, $billing, $amount, $currency, $exchangeRate, $detectedCurrency, $shippingAmount, $shippingTitle);
 
                         return response()->json([
                             'client_secret'     => $existingSecret,
@@ -247,7 +249,7 @@ class PaymentController extends Controller
         return response()->json(['error' => ['message' => 'Could not create or reuse payment intent.']], 500);
     }
 
-    private function updateSession(CheckoutSession $session, ?string $email, ?array $shipping, ?array $billing, int $amount, string $currency, float $exchangeRate = 1.0, string $detectedCurrency = 'USD'): void
+    private function updateSession(CheckoutSession $session, ?string $email, ?array $shipping, ?array $billing, int $amount, string $currency, float $exchangeRate = 1.0, string $detectedCurrency = 'USD', ?int $shippingAmount = null, string $shippingTitle = ''): void
     {
         $update = [
             'charged_amount'   => $amount,
@@ -255,6 +257,13 @@ class PaymentController extends Controller
             'exchange_rate'    => $exchangeRate,
             'detected_currency'=> strtoupper($detectedCurrency),
         ];
+
+        if ($shippingAmount !== null) {
+            $update['shipping_amount'] = max(0, $shippingAmount);
+        }
+        if ($shippingTitle !== '') {
+            $update['referrer'] = $shippingTitle;
+        }
 
         if ($email && filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $update['customer_email'] = $email;

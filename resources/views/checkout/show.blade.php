@@ -587,6 +587,37 @@ body {
     border-width: 3px;
     margin: 0;
 }
+
+.ship-rate {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border: 1.5px solid var(--border-light);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    background: var(--bg-input);
+}
+.ship-rate.selected {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 1px var(--primary);
+}
+.ship-rate input { accent-color: var(--primary); }
+.policy-footer {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 13px;
+}
+.policy-footer a { color: var(--primary); text-decoration: none; }
+.policy-footer a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -721,9 +752,10 @@ body {
             <div class="section-head">
                 <h2 class="section-title">Shipping method</h2>
             </div>
-            <div class="shipping-box">
+            <div class="shipping-box" id="shippingBox">
                 Enter your shipping address to view available shipping methods.
             </div>
+            <div id="shippingRates" style="display:none;"></div>
         </div>
 
         <!-- Payment -->
@@ -798,7 +830,7 @@ body {
                 </div>
                 <div class="total-row">
                     <span class="label">Shipping <span class="help">ⓘ</span></span>
-                    <span class="value muted">Enter shipping address</span>
+                    <span class="value muted" id="shipV">Enter shipping address</span>
                 </div>
 
                 <div class="total-divider"></div>
@@ -842,7 +874,8 @@ var S = {
     secret: null, piId: null,
     currency: C.cur, amount: C.amt, rate: <?php echo $displayRate; ?>,
     processing: false, ready: false,
-    discount: 0, discountCode: ''
+    discount: 0, discountCode: '', discountAmount: 0, freeShipping: false,
+    shippingCents: 0, shippingBase: 0, shippingTitle: 'Standard Shipping', shippingLoaded: false
 };
 
 var $ = function(id) { return document.getElementById(id); };
@@ -870,9 +903,13 @@ function updatePrices(cur, amt, rate) {
     S.amount = amt;
     S.rate = rate;
 
-    // Calculate discount
-    var discountAmount = Math.round(amt * S.discount / 100);
-    var finalAmount = amt - discountAmount;
+    // Calculate discount (percent or fixed amount converted by rate)
+    var discountAmount = S.discountAmount > 0
+        ? Math.round(S.discountAmount * rate)
+        : Math.round(amt * S.discount / 100);
+    var ship = S.freeShipping ? 0 : Math.round((S.shippingBase || 0) * rate);
+    S.shippingCents = ship;
+    var finalAmount = Math.max(0, amt - discountAmount + ship);
 
     // Update item prices (multiply base price by exchange rate)
     document.querySelectorAll('[data-base]').forEach(function(el) {
@@ -885,12 +922,17 @@ function updatePrices(cur, amt, rate) {
     $('subV').textContent = money(amt, cur);
 
     // Update discount
-    if (S.discount > 0) {
+    if (S.discount > 0 || S.discountAmount > 0 || S.freeShipping) {
         $('discountRow').style.display = 'flex';
         $('discountCodeLabel').textContent = S.discountCode ? '(' + S.discountCode + ')' : '';
-        $('discountV').textContent = '-' + money(discountAmount, cur);
+        $('discountV').textContent = S.freeShipping && discountAmount === 0 ? 'Free shipping' : ('-' + money(discountAmount, cur));
     } else {
         $('discountRow').style.display = 'none';
+    }
+
+    if (S.shippingLoaded && $('shipV')) {
+        $('shipV').classList.remove('muted');
+        $('shipV').textContent = (S.freeShipping || ship === 0) ? 'Free' : money(ship, cur);
     }
 
     // Update grand total
@@ -940,6 +982,8 @@ async function applyDiscountCode() {
 
         if (d.valid) {
             S.discount = d.discount_percent || 0;
+            S.discountAmount = d.discount_amount || 0;
+            S.freeShipping = !!d.free_shipping;
             S.discountCode = code;
             updatePrices(S.currency, S.amount, S.rate);
             $('applyDiscount').textContent = '✓ Applied';
@@ -1004,6 +1048,7 @@ async function onCountryChange() {
     }
 
     await loadStates(country);
+    await loadShippingRates();
 }
 
 async function loadStates(country) {
@@ -1059,7 +1104,9 @@ async function createPI(cur, amt) {
                 amount: amt,
                 currency: cur,
                 exchange_rate: S.rate,
-                detected_currency: cur.toUpperCase()
+                detected_currency: cur.toUpperCase(),
+                shipping_amount: S.freeShipping ? 0 : Math.round((S.shippingBase || 0)),
+                shipping_title: S.shippingTitle
             })
         });
         var d = await r.json();
@@ -1073,9 +1120,6 @@ async function createPI(cur, amt) {
     }
 }
 
-// ============================================
-// MOUNT STRIPE ELEMENTS
-// ============================================
 function mountElements(clientSecret) {
     S.stripe = Stripe(C.sk);
 
@@ -1091,92 +1135,41 @@ function mountElements(clientSecret) {
                 fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
                 borderRadius: '6px',
                 spacingUnit: '4px'
-            },
-            rules: {
-                '.Input': {
-                    backgroundColor: '#1f1f1f',
-                    border: '1.5px solid #333',
-                    color: '#ffffff',
-                    padding: '14px'
-                },
-                '.Input:focus': {
-                    border: '1.5px solid <?php echo $primaryColor; ?>',
-                    boxShadow: '0 0 0 1px <?php echo $primaryColor; ?>'
-                },
-                '.Label': {
-                    color: '#9ca3af',
-                    fontSize: '13px',
-                    marginBottom: '4px'
-                },
-                '.Tab': {
-                    backgroundColor: '#1f1f1f',
-                    border: '1.5px solid #333'
-                },
-                '.Tab--selected': {
-                    backgroundColor: '#2a2a2a',
-                    border: '1.5px solid <?php echo $primaryColor; ?>'
-                }
             }
         }
     });
 
-    // Express Checkout - Hidden, used only for actual payment processing
     try {
-        S.expEl = S.elements.create('expressCheckout', {
-            buttonHeight: 50
-        });
+        S.expEl = S.elements.create('expressCheckout', { buttonHeight: 50 });
         S.expEl.mount('#express-checkout-element');
-
         S.expEl.on('ready', function(ev) {
-            var hasApple = false;
-            var hasGoogle = false;
-
-            if (ev.availablePaymentMethods) {
-                hasApple = ev.availablePaymentMethods.applePay;
-                hasGoogle = ev.availablePaymentMethods.googlePay;
-            }
-
-            // Show custom buttons
-            if (hasApple) {
-                $('applePayBtn').style.display = 'flex';
-                $('orDivider').style.display = 'flex';
-            }
-            if (hasGoogle) {
-                $('googlePayBtn').style.display = 'flex';
-                $('orDivider').style.display = 'flex';
-            }
-
-            // If neither, hide divider and grid
+            var hasApple = ev.availablePaymentMethods && ev.availablePaymentMethods.applePay;
+            var hasGoogle = ev.availablePaymentMethods && ev.availablePaymentMethods.googlePay;
+            if (hasApple) { $('applePayBtn').style.display = 'flex'; $('orDivider').style.display = 'flex'; }
+            if (hasGoogle) { $('googlePayBtn').style.display = 'flex'; $('orDivider').style.display = 'flex'; }
             if (!hasApple && !hasGoogle) {
                 $('expressBtns').style.display = 'none';
                 $('orDivider').style.display = 'none';
             }
         });
-
         S.expEl.on('confirm', async function() {
             if (S.processing) return;
             S.processing = true;
-
             var sr = await S.elements.submit();
             if (sr.error) { showError(sr.error.message); S.processing = false; return; }
-
             var res = await S.stripe.confirmPayment({
                 elements: S.elements,
                 clientSecret: S.secret,
                 confirmParams: { return_url: C.url + '/checkout/success?session=' + C.sid }
             });
-
             if (res.error) { showError(res.error.message); S.processing = false; }
         });
     } catch(e) {}
 
-    // Payment Element
     S.payEl = S.elements.create('payment', {
         layout: { type: 'accordion', defaultCollapsed: false, radios: true }
     });
-
     S.payEl.mount('#payment-element');
-
     S.payEl.on('ready', function() {
         $('payLoading').style.display = 'none';
         $('payment-element').style.display = 'block';
@@ -1184,58 +1177,85 @@ function mountElements(clientSecret) {
         S.ready = true;
         $('payTxt').textContent = 'PAY ' + money(S.finalAmount || S.amount, S.currency);
     });
-
-    S.payEl.on('change', function(ev) {
-        if (ev.complete) hideError();
-    });
+    S.payEl.on('change', function(ev) { if (ev.complete) hideError(); });
 }
 
-// ============================================
-// CUSTOM APPLE PAY / GOOGLE PAY BUTTONS
-// They trigger the hidden Stripe express checkout
-// ============================================
 $('applePayBtn').addEventListener('click', function() {
-    // Stripe's Express Checkout will handle this
-    // We trigger it programmatically through the express element
-    if (S.expEl) {
-        // Click the underlying Stripe button
-        var expEl = document.querySelector('#express-checkout-element iframe');
-        if (expEl) {
-            $('express-checkout-element').style.display = 'block';
-            $('express-checkout-element').style.position = 'absolute';
-            $('express-checkout-element').style.left = '-9999px';
-            // Stripe doesn't expose direct trigger, so show the element briefly
-        }
-    }
+    if (S.expEl) $('express-checkout-element').style.display = 'block';
 });
-
 $('googlePayBtn').addEventListener('click', function() {
-    if (S.expEl) {
-        var expEl = document.querySelector('#express-checkout-element iframe');
-        if (expEl) {
-            $('express-checkout-element').style.display = 'block';
-        }
-    }
+    if (S.expEl) $('express-checkout-element').style.display = 'block';
 });
 
-// ============================================
-// INIT
-// ============================================
+async function loadPolicies() {
+    try {
+        var r = await fetch(C.url + '/api/checkout-policies?session_id=' + C.sid);
+        var d = await r.json();
+        var p = d.policies || {};
+        if ($('polShipping') && p.shipping) $('polShipping').href = p.shipping;
+        if ($('polRefund') && p.refund) $('polRefund').href = p.refund;
+        if ($('polPrivacy') && p.privacy) $('polPrivacy').href = p.privacy;
+        if ($('polTerms') && p.terms) $('polTerms').href = p.terms;
+    } catch(e) {}
+}
+
+async function loadShippingRates() {
+    var country = $('country') ? $('country').value : '';
+    var state = $('state') ? $('state').value : '';
+    if (!country) return;
+    try {
+        var r = await fetch(C.url + '/api/shipping-rates?session_id=' + encodeURIComponent(C.sid) + '&country=' + encodeURIComponent(country) + '&state=' + encodeURIComponent(state || ''));
+        var d = await r.json();
+        var rates = d.rates || [];
+        if (!rates.length) return;
+        if ($('shippingBox')) $('shippingBox').style.display = 'none';
+        var wrap = $('shippingRates');
+        if (!wrap) return;
+        wrap.style.display = 'block';
+        wrap.innerHTML = '';
+        rates.forEach(function(rate, idx) {
+            var displayPrice = Math.round((rate.price || 0) * (S.rate || 1));
+            var row = document.createElement('label');
+            row.className = 'ship-rate' + (idx === 0 ? ' selected' : '');
+            row.innerHTML = '<span><input type="radio" name="shipRate" value="'+idx+'" '+(idx===0?'checked':'')+'> '+
+                (rate.title || 'Shipping') + '</span><strong>' +
+                (displayPrice === 0 ? 'Free' : money(displayPrice, S.currency)) + '</strong>';
+            row.querySelector('input').addEventListener('change', function() {
+                document.querySelectorAll('.ship-rate').forEach(function(el){ el.classList.remove('selected'); });
+                row.classList.add('selected');
+                S.shippingBase = rate.price || 0;
+                S.shippingTitle = rate.title || 'Shipping';
+                S.shippingLoaded = true;
+                updatePrices(S.currency, S.amount, S.rate);
+            });
+            wrap.appendChild(row);
+            if (idx === 0) {
+                S.shippingBase = rate.price || 0;
+                S.shippingTitle = rate.title || 'Shipping';
+                S.shippingLoaded = true;
+            }
+        });
+        updatePrices(S.currency, S.amount, S.rate);
+    } catch(e) {}
+}
+
 async function init() {
     $('pgL').style.display = 'flex';
-
     try {
         var detected = await detectLocation();
         var rateData = await getRate(C.baseCur, detected, C.baseAmt);
         var cur = rateData.fallback ? C.baseCur : (rateData.to_currency || C.baseCur);
         var amt = rateData.converted_amount || C.baseAmt;
         var rate = rateData.rate ?? rateData.exchange_rate ?? 1.0;
-
         updatePrices(cur, amt, rate);
-
+        await loadShippingRates();
         var pi = await createPI(cur.toLowerCase(), S.finalAmount || amt);
         if (pi) mountElements(pi.client_secret);
-
+        loadPolicies();
+        ['city','zip','state','country'].forEach(function(id) {
+            var el = $(id);
+            if (el) el.addEventListener('change', function(){ loadShippingRates(); });
+        });
         $('pgL').style.display = 'none';
     } catch(e) {
         $('pgL').style.display = 'none';
@@ -1243,25 +1263,18 @@ async function init() {
     }
 }
 
-// ============================================
-// PAY BUTTON
-// ============================================
 $('payBtn').addEventListener('click', async function() {
     if (S.processing || !S.ready) return;
     hideError();
     if (!validate()) return;
-
     S.processing = true;
     setLoading(true);
-
     try {
         var sr = await S.elements.submit();
         if (sr.error) { showError(sr.error.message); setLoading(false); S.processing = false; return; }
-
         var em = $('email').value.trim();
         var sh = getShipping();
         var finalAmt = S.finalAmount || S.amount;
-
         var pr = await fetch(C.url + '/api/payment-intent', {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
@@ -1272,14 +1285,14 @@ $('payBtn').addEventListener('click', async function() {
                 exchange_rate: S.rate,
                 detected_currency: S.currency.toUpperCase(),
                 email: em,
-                shipping: sh
+                shipping: sh,
+                shipping_amount: S.freeShipping ? 0 : Math.round(S.shippingBase || 0),
+                shipping_title: S.shippingTitle
             })
         });
         var pd = await pr.json();
         if (pd.error) { showError(pd.error.message); setLoading(false); S.processing = false; return; }
-
         S.secret = pd.client_secret;
-
         var res = await S.stripe.confirmPayment({
             elements: S.elements,
             clientSecret: S.secret,
@@ -1295,7 +1308,6 @@ $('payBtn').addEventListener('click', async function() {
                 }
             }
         });
-
         if (res.error) {
             showError(['card_error','validation_error'].indexOf(res.error.type) >= 0 ? res.error.message : 'Payment failed. Try another card.');
             setLoading(false);
@@ -1331,20 +1343,11 @@ function validate() {
         {id:'city', ck: function(v){return v.length > 0;}, m: 'City required'},
         {id:'zip', ck: function(v){return v.length > 0;}, m: 'PIN code required'}
     ];
-
-    f.forEach(function(x) {
-        var e = $(x.id);
-        if (e) e.classList.remove('is-invalid');
-    });
-
+    f.forEach(function(x) { var e = $(x.id); if (e) e.classList.remove('is-invalid'); });
     for (var i = 0; i < f.length; i++) {
         var x = f[i], e = $(x.id), v = e ? e.value.trim() : '';
         if (!x.ck(v)) {
-            if (e) {
-                e.classList.add('is-invalid');
-                e.scrollIntoView({behavior:'smooth', block:'center'});
-                e.focus();
-            }
+            if (e) { e.classList.add('is-invalid'); e.scrollIntoView({behavior:'smooth', block:'center'}); e.focus(); }
             showError(x.m);
             return false;
         }
@@ -1357,19 +1360,21 @@ function setLoading(on) {
     $('paySpn').style.display = on ? 'inline-block' : 'none';
     $('payTxt').textContent = on ? 'PROCESSING...' : ('PAY ' + money(S.finalAmount || S.amount, S.currency));
 }
-
 function showError(msg) {
     $('errBox').textContent = msg;
     $('errBox').style.display = 'block';
     $('errBox').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
-
-function hideError() {
-    $('errBox').style.display = 'none';
-}
+function hideError() { $('errBox').style.display = 'none'; }
 
 init();
 </script>
 
+<footer class="policy-footer" id="policyFooter">
+    <a id="polShipping" href="#" target="_blank" rel="noopener">Shipping policy</a>
+    <a id="polRefund" href="#" target="_blank" rel="noopener">Refund policy</a>
+    <a id="polPrivacy" href="#" target="_blank" rel="noopener">Privacy policy</a>
+    <a id="polTerms" href="#" target="_blank" rel="noopener">Terms of service</a>
+</footer>
 </body>
 </html>
