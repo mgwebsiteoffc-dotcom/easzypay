@@ -73,7 +73,7 @@ body {
 }
 
 .hdr-inner {
-    max-width: 1280px;
+    max-width: 1100px;
     margin: 0 auto;
     display: flex;
     justify-content: space-between;
@@ -98,11 +98,12 @@ body {
 
 /* LAYOUT */
 .layout {
-    max-width: 1280px;
+    max-width: 1100px;
     margin: 0 auto;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
     min-height: calc(100vh - 80px);
+    justify-content: center;
 }
 
 @media (max-width: 900px) {
@@ -110,15 +111,16 @@ body {
 }
 
 .form-col {
-    padding: 32px 60px;
+    padding: 28px 32px 40px;
     border-right: 1px solid var(--border);
+    max-width: 560px;
 }
 
 @media (max-width: 1100px) { .form-col { padding: 32px 40px; } }
 @media (max-width: 900px) { .form-col { padding: 24px; border-right: none; } }
 
 .order-col {
-    padding: 32px 60px;
+    padding: 28px 32px 40px;
     background: var(--bg);
 }
 
@@ -263,13 +265,14 @@ body {
 
 .form-control {
     width: 100%;
-    height: 54px;
-    padding: 20px 16px 6px;
-    border: 1.5px solid var(--border-light);
-    border-radius: 6px;
+    max-width: 100%;
+    height: 46px;
+    padding: 16px 12px 4px;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
     background: var(--bg-input);
     color: var(--text);
-    font-size: 15px;
+    font-size: 14px;
     font-family: inherit;
     outline: none;
     transition: border-color 0.15s;
@@ -290,10 +293,10 @@ body {
 
 .form-label {
     position: absolute;
-    left: 16px;
-    top: 17px;
+    left: 12px;
+    top: 14px;
     color: var(--text-muted);
-    font-size: 15px;
+    font-size: 14px;
     pointer-events: none;
     transition: all 0.15s ease;
     transform-origin: left top;
@@ -549,23 +552,6 @@ body {
 
 .total-row.grand .value { font-weight: 700; }
 
-/* CONVERSION NOTE */
-.conversion-note {
-    background: rgba(102,126,234,0.08);
-    border: 1px solid rgba(102,126,234,0.2);
-    border-radius: 6px;
-    padding: 10px 14px;
-    margin-top: 12px;
-    font-size: 12px;
-    color: var(--text-muted);
-    line-height: 1.6;
-    display: none;
-}
-
-.conversion-note.show { display: block; }
-
-.conversion-note strong { color: var(--text); }
-
 /* LOADING OVERLAY */
 .loader-overlay {
     position: fixed;
@@ -606,7 +592,7 @@ body {
 }
 .ship-rate input { accent-color: var(--primary); }
 .policy-footer {
-    max-width: 1280px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 24px;
     display: flex;
@@ -843,11 +829,7 @@ body {
                     </span>
                 </div>
 
-                <!-- Conversion Rate Info -->
-                <div class="conversion-note" id="conversionNote">
-                    💱 Converted from <strong id="convFromAmount"></strong> at exchange rate <strong id="convRate"></strong>
-                    <br><span style="opacity:0.7;font-size:11px;">Rate refreshed: <span id="convTime"></span></span>
-                </div>
+
             </div>
         </div>
     </div>
@@ -942,18 +924,6 @@ function updatePrices(cur, amt, rate) {
     // Update pay button
     $('payTxt').textContent = 'PAY ' + money(finalAmount, cur);
 
-    // Show conversion note if currency was converted
-    if (cur.toUpperCase() !== C.baseCur && rate !== 1.0) {
-        $('convFromAmount').textContent = C.baseSym + (C.baseAmt / 100).toFixed(2) + ' ' + C.baseCur;
-        $('convRate').textContent = '1 ' + C.baseCur + ' = ' + rate.toFixed(4) + ' ' + cur.toUpperCase();
-        var now = new Date();
-        $('convTime').textContent = now.toLocaleTimeString();
-        $('conversionNote').classList.add('show');
-    } else {
-        $('conversionNote').classList.remove('show');
-    }
-
-    // Store final amount for payment
     S.finalAmount = finalAmount;
 }
 
@@ -1113,6 +1083,8 @@ async function createPI(cur, amt) {
         if (d.error) throw new Error(d.error.message);
         S.secret = d.client_secret;
         S.piId = d.payment_intent_id;
+        if (d.amount) S.finalAmount = d.amount;
+        if (d.currency) S.currency = d.currency;
         return d;
     } catch(e) {
         showError(e.message);
@@ -1236,7 +1208,21 @@ async function loadShippingRates() {
             }
         });
         updatePrices(S.currency, S.amount, S.rate);
+        refreshPaymentForTotal();
     } catch(e) {}
+}
+
+async function refreshPaymentForTotal() {
+    if (!S.currency || !S.finalAmount) return;
+    var pi = await createPI(S.currency.toLowerCase(), S.finalAmount);
+    if (!pi || !pi.client_secret) return;
+    if (S.payEl) { try { S.payEl.unmount(); } catch(e) {} }
+    if (S.expEl) { try { S.expEl.unmount(); } catch(e) {} }
+    $('payLoading').style.display = 'block';
+    $('payment-element').style.display = 'none';
+    $('payBtn').disabled = true;
+    S.ready = false;
+    mountElements(pi.client_secret);
 }
 
 async function init() {
@@ -1366,6 +1352,11 @@ function showError(msg) {
     $('errBox').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
 function hideError() { $('errBox').style.display = 'none'; }
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, function(ch) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]);
+    });
+}
 
 init();
 </script>

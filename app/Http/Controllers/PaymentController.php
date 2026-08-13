@@ -3,6 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Models\CheckoutSession;
+use App\Models\Store;
+use App\Services\ExchangeRateService;
+use App\Services\ShopifyService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
@@ -20,19 +23,18 @@ class PaymentController extends Controller
         }
 
         try {
-            $data             = $request->json()->all();
-            $sessionId        = $data['session_id'] ?? '';
-            $currency         = strtolower($data['currency'] ?? 'usd');
-            $amount           = (int) ($data['amount'] ?? 0);
-            $exchangeRate     = (float) ($data['exchange_rate'] ?? 1.0);
-            $detectedCurrency = strtoupper(trim((string) ($data['detected_currency'] ?? $currency)));
-            $email            = $data['email'] ?? null;
-            $shipping         = $data['shipping'] ?? null;
-            $billing          = $data['billing'] ?? null;
-            $shippingAmount   = isset($data['shipping_amount']) ? (int) $data['shipping_amount'] : null;
-            $shippingTitle    = trim((string) ($data['shipping_title'] ?? ''));
+            $data              = $request->json()->all() ?: $request->all();
+            $sessionId         = preg_replace('/[^a-f0-9]/', '', strtolower((string) ($data['session_id'] ?? '')));
+            $requestedCurrency = strtoupper(trim((string) ($data['currency'] ?? $data['detected_currency'] ?? '')));
+            $email             = $data['email'] ?? null;
+            $shipping          = is_array($data['shipping'] ?? null) ? $data['shipping'] : null;
+            $billing           = is_array($data['billing'] ?? null) ? $data['billing'] : null;
+            $shippingTitle     = trim((string) ($data['shipping_title'] ?? ''));
 
-            // Find session
+            if (strlen($sessionId) !== 64) {
+                return response()->json(['error' => ['message' => 'Invalid checkout session.']], 400);
+            }
+
             $session = CheckoutSession::where('session_id', $sessionId)->active()->first();
 
             if (!$session) {
@@ -41,9 +43,13 @@ class PaymentController extends Controller
                 ], 400);
             }
 
-            if ($amount < 50) {
-                $amount = (int) $session->subtotal;
-            }
+            $quote = $this->quoteCharge($session, $requestedCurrency, $shippingTitle, $shipping);
+            $amount = (int) $quote['amount'];
+            $currency = strtolower($quote['currency']);
+            $exchangeRate = (float) $quote['rate'];
+            $detectedCurrency = strtoupper($quote['currency']);
+            $shippingAmount = (int) $quote['shipping_amount'];
+            $shippingTitle = (string) $quote['shipping_title'];
 
             if ($amount < 50) {
                 return response()->json([
@@ -218,7 +224,7 @@ class PaymentController extends Controller
                     'status'                   => 'payment_created',
                 ]);
 
-                $this->updateSession($session, $email, $shipping, $billing, $amount, $currency, $exchangeRate, $detectedCurrency);
+                $this->updateSession($session, $email, $shipping, $billing, $amount, $currency, $exchangeRate, $detectedCurrency, $shippingAmount, $shippingTitle);
 
                 return response()->json([
                     'client_secret'     => $pi->client_secret,
@@ -247,6 +253,69 @@ class PaymentController extends Controller
         }
 
         return response()->json(['error' => ['message' => 'Could not create or reuse payment intent.']], 500);
+    }
+
+    private function quoteCharge(CheckoutSession $session, string $requestedCurrency, string $shippingTitle, ?array $shipping): array
+    {
+        $allowed = ['USD','GBP','EUR','AUD','CAD','SGD','AED','INR','JPY','NZD','HKD','CHF','SEK','NOK','DKK','ZAR','BRL','MXN'];
+        $shopCurrency = strtoupper((string) ($session->currency ?: 'USD'));
+        $currency = strtoupper($requestedCurrency ?: $shopCurrency);
+        if (!in_array($currency, $allowed, true)) {
+            $currency = $shopCurrency;
+        }
+
+        $country = strtoupper((string) ($shipping['address']['country'] ?? $session->shipping_country ?? ''));
+        $state = (string) ($shipping['address']['state'] ?? $session->shipping_state ?? '');
+
+        $subtotal = max(0, (int) $session->subtotal);
+        $discount = max(0, (int) ($session->discount_amount ?? 0));
+        if ($discount > $subtotal) {
+            $discount = $subtotal;
+        }
+
+        $shipCents = 0;
+        $shipTitle = $shippingTitle !== '' ? $shippingTitle : 'Standard Shipping';
+        $store = null;
+        if ($session->store_id) {
+            $store = Store::find($session->store_id);
+        }
+        if (!$store && $session->shop_domain) {
+            $store = Store::where('myshopify_domain', $session->shop_domain)
+                ->orWhere('shop_domain', $session->shop_domain)
+                ->first();
+        }
+
+        if ($store && !empty($store->access_token) && $country !== '') {
+            try {
+                $shopify = new ShopifyService($store->myshopify_domain, $store->access_token);
+                $rates = $shopify->getShippingRates($country, $state ?: null, $subtotal);
+                $matched = null;
+                foreach ($rates as $rate) {
+                    if ($shippingTitle !== '' && strcasecmp((string) $rate['title'], $shippingTitle) === 0) {
+                        $matched = $rate;
+                        break;
+                    }
+                }
+                $matched = $matched ?: ($rates[0] ?? null);
+                if ($matched) {
+                    $shipCents = max(0, (int) ($matched['price'] ?? 0));
+                    $shipTitle = (string) ($matched['title'] ?? $shipTitle);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Shipping quote failed', ['error' => $e->getMessage()]);
+            }
+        }
+
+        $shopTotal = max(0, $subtotal - $discount + $shipCents);
+        $fx = app(ExchangeRateService::class)->convert($shopCurrency, $currency, $shopTotal);
+
+        return [
+            'amount' => (int) ($fx['converted_amount'] ?? $shopTotal),
+            'currency' => strtoupper((string) ($fx['to_currency'] ?? $shopCurrency)),
+            'rate' => (float) ($fx['rate'] ?? 1.0),
+            'shipping_amount' => $shipCents,
+            'shipping_title' => $shipTitle,
+        ];
     }
 
     private function updateSession(CheckoutSession $session, ?string $email, ?array $shipping, ?array $billing, int $amount, string $currency, float $exchangeRate = 1.0, string $detectedCurrency = 'USD', ?int $shippingAmount = null, string $shippingTitle = ''): void
