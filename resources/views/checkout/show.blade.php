@@ -196,8 +196,13 @@ body {
     background-size: contain;
 }
 
-/* Hide express checkout element (we use custom buttons) */
-#express-checkout-element { display: none; }
+#express-checkout-element {
+    margin-bottom: 8px;
+}
+#express-checkout-element:empty,
+#express-checkout-element.is-hidden {
+    display: none;
+}
 
 .or-divider {
     display: flex;
@@ -630,15 +635,7 @@ body {
     <!-- LEFT: FORM -->
     <div class="form-col">
 
-        <!-- Express Checkout Buttons (Apple Pay / Google Pay) -->
-        <div class="express-buttons" id="expressBtns">
-            <button type="button" id="applePayBtn" class="express-btn btn-apple-pay" style="display:none;">Pay</button>
-            <button type="button" id="googlePayBtn" class="express-btn btn-google-pay" style="display:none;">Pay</button>
-        </div>
-
-        <!-- Hidden Stripe Express Checkout Element (handles the actual payment) -->
-        <div id="express-checkout-element"></div>
-
+        <div id="express-checkout-element" class="is-hidden"></div>
         <div class="or-divider" id="orDivider" style="display:none;"><span>OR</span></div>
 
         <!-- Contact -->
@@ -1153,13 +1150,6 @@ function mountElements(clientSecret) {
     S.payEl.on('change', function(ev) { if (ev.complete) hideError(); });
 }
 
-$('applePayBtn').addEventListener('click', function() {
-    if (S.expEl) $('express-checkout-element').style.display = 'block';
-});
-$('googlePayBtn').addEventListener('click', function() {
-    if (S.expEl) $('express-checkout-element').style.display = 'block';
-});
-
 async function loadPolicies() {
     try {
         var r = await fetch(C.url + '/api/checkout-policies?session_id=' + C.sid);
@@ -1334,6 +1324,87 @@ function validate() {
     for (var i = 0; i < f.length; i++) {
         var x = f[i], e = $(x.id), v = e ? e.value.trim() : '';
         if (!x.ck(v)) {
+            if (e) { e.classList.add('is-invalid'); e.scrollIntoView({behavior:'smooth', block:'center'}); e.focus(); }
+            showError(x.m);
+            return false;
+        }
+    }
+    return true;
+}
+
+function setLoading(on) {
+    $('payBtn').disabled = on;
+    $('paySpn').style.display = on ? 'inline-block' : 'none';
+    $('payTxt').textContent = on ? 'PROCESSING...' : ('PAY ' + money(S.finalAmount || S.amount, S.currency));
+}
+function showError(msg) {
+    $('errBox').textContent = msg;
+    $('errBox').style.display = 'block';
+    $('errBox').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+function hideError() { $('errBox').style.display = 'none'; }
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, function(ch) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]);
+    });
+}
+
+init();
+</script>
+
+<footer class="policy-footer" id="policyFooter">
+    <a id="polShipping" href="#" target="_blank" rel="noopener">Shipping policy</a>
+    <a id="polRefund" href="#" target="_blank" rel="noopener">Refund policy</a>
+    <a id="polPrivacy" href="#" target="_blank" rel="noopener">Privacy policy</a>
+    <a id="polTerms" href="#" target="_blank" rel="noopener">Terms of service</a>
+</footer>
+</body>
+</html>
+ss required'},
+        {id:'city', ck: function(v){return v.length > 0;}, m: 'City required'},
+        {id:'zip', ck: function(v){return v.length > 0;}, m: 'PIN code required'}
+    ];
+    f.forEach(function(x) { var e = $(x.id); if (e) e.classList.remove('is-invalid'); });
+    for (var i = 0; i < f.length; i++) {
+        var x = f[i], e = $(x.id), v = e ? e.value.trim() : '';
+        if (!x.ck(v)) {
+            if (e) { e.classList.add('is-invalid'); e.scrollIntoView({behavior:'smooth', block:'center'}); e.focus(); }
+            showError(x.m);
+            return false;
+        }
+    }
+    return true;
+}
+
+function setLoading(on) {
+    $('payBtn').disabled = on;
+    $('paySpn').style.display = on ? 'inline-block' : 'none';
+    $('payTxt').textContent = on ? 'PROCESSING...' : ('PAY ' + money(S.finalAmount || S.amount, S.currency));
+}
+function showError(msg) {
+    $('errBox').textContent = msg;
+    $('errBox').style.display = 'block';
+    $('errBox').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+function hideError() { $('errBox').style.display = 'none'; }
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, function(ch) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]);
+    });
+}
+
+init();
+</script>
+
+<footer class="policy-footer" id="policyFooter">
+    <a id="polShipping" href="#" target="_blank" rel="noopener">Shipping policy</a>
+    <a id="polRefund" href="#" target="_blank" rel="noopener">Refund policy</a>
+    <a id="polPrivacy" href="#" target="_blank" rel="noopener">Privacy policy</a>
+    <a id="polTerms" href="#" target="_blank" rel="noopener">Terms of service</a>
+</footer>
+</body>
+</html>
+     if (!x.ck(v)) {
             if (e) { e.classList.add('is-invalid'); e.scrollIntoView({behavior:'smooth', block:'center'}); e.focus(); }
             showError(x.m);
             return false;
