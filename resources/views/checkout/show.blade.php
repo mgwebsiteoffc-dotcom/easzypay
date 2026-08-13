@@ -1514,7 +1514,7 @@ function applyPlace(d) {
             $('state').value = code;
         }
     }
-    if (d.postcode && $('zip') && !$('zip').value) {
+    if (d.postcode && $('zip')) {
         $('zip').value = d.postcode;
         floatLabel($('zip'));
     }

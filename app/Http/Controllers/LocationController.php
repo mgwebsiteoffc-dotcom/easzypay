@@ -103,51 +103,83 @@ class LocationController extends Controller
             return response()->json(['suggestions' => []]);
         }
 
-        $cacheKey = 'addr_' . md5($country . '|' . mb_strtolower($q));
+        $cacheKey = 'addr2_' . md5($country . '|' . mb_strtolower($q));
         $suggestions = Cache::remember($cacheKey, now()->addHours(6), function () use ($q, $country) {
             try {
-                $url = 'https://photon.komoot.io/api/?q=' . urlencode($q) . '&limit=6&lang=en';
-                $res = Http::timeout(6)
-                    ->withHeaders(['User-Agent' => 'EaszyPayCheckout/1.0'])
-                    ->get($url);
+                $params = [
+                    'format' => 'jsonv2',
+                    'addressdetails' => 1,
+                    'limit' => 8,
+                    'q' => $q,
+                ];
+                if (strlen($country) === 2) {
+                    $params['countrycodes'] = strtolower($country);
+                }
+
+                $res = Http::timeout(8)
+                    ->withHeaders([
+                        'User-Agent' => 'EaszyPayCheckout/1.0 (easzypay.lead365.in)',
+                        'Accept-Language' => 'en',
+                    ])
+                    ->get('https://nominatim.openstreetmap.org/search', $params);
 
                 if (!$res->ok()) {
                     return [];
                 }
+
                 $out = [];
-                foreach (($res->json('features') ?? []) as $feat) {
-                    $p = $feat['properties'] ?? [];
-                    $cc = strtoupper((string) ($p['countrycode'] ?? ''));
-                    if ($country && $cc && $cc !== $country) {
-                        continue;
-                    }
+                foreach (($res->json() ?? []) as $row) {
+                    $addr = is_array($row['address'] ?? null) ? $row['address'] : [];
+                    $cc = strtoupper((string) ($addr['country_code'] ?? ''));
                     $line1 = trim(implode(' ', array_filter([
-                        $p['housenumber'] ?? '',
-                        $p['street'] ?? ($p['name'] ?? ''),
+                        $addr['house_number'] ?? '',
+                        $addr['road'] ?? $addr['pedestrian'] ?? $addr['residential'] ?? '',
                     ])));
                     if ($line1 === '') {
-                        $line1 = (string) ($p['name'] ?? '');
+                        $line1 = (string) ($row['name'] ?? '');
+                    }
+                    if ($line1 === '') {
+                        $line1 = explode(',', (string) ($row['display_name'] ?? ''))[0] ?? '';
                     }
                     if ($line1 === '') {
                         continue;
                     }
+
+                    $city = $addr['city'] ?? $addr['town'] ?? $addr['village'] ?? $addr['hamlet'] ?? $addr['suburb'] ?? $addr['county'] ?? '';
+                    $state = $addr['state'] ?? $addr['region'] ?? '';
+                    $iso = (string) ($addr['ISO3166-2-lvl4'] ?? '');
+                    $stateCode = '';
+                    if (str_contains($iso, '-')) {
+                        $stateCode = strtoupper((string) substr($iso, strpos($iso, '-') + 1));
+                    }
+                    if ($stateCode === '' && $cc === 'US') {
+                        $stateCode = $this->usStateCode($state) ?? '';
+                    }
+                    if ($stateCode === '' && $cc === 'IN') {
+                        $stateCode = $this->indiaStateCode($state) ?? '';
+                    }
+
                     $out[] = [
                         'label' => implode(', ', array_filter([
                             $line1,
-                            $p['city'] ?? $p['district'] ?? $p['county'] ?? null,
-                            $p['state'] ?? null,
-                            $p['postcode'] ?? null,
-                            $cc ?: null,
+                            $city,
+                            $state,
+                            $addr['postcode'] ?? null,
                         ])),
                         'line1' => $line1,
-                        'city' => $p['city'] ?? $p['district'] ?? $p['county'] ?? '',
-                        'state' => $p['state'] ?? '',
-                        'state_code' => $p['statecode'] ?? '',
-                        'postcode' => $p['postcode'] ?? '',
+                        'city' => $city,
+                        'state' => $state,
+                        'state_code' => $stateCode,
+                        'postcode' => (string) ($addr['postcode'] ?? ''),
                         'country' => $cc,
                     ];
                 }
-                return $out;
+
+                usort($out, function ($a, $b) {
+                    return (int) ($b['postcode'] !== '') <=> (int) ($a['postcode'] !== '');
+                });
+
+                return array_values(array_slice($out, 0, 6));
             } catch (\Throwable $e) {
                 Log::warning('Address suggest failed', ['error' => $e->getMessage()]);
                 return [];
@@ -343,6 +375,24 @@ class LocationController extends Controller
             }
             return $empty;
         });
+    }
+
+    private function usStateCode(string $name): ?string
+    {
+        $map = [
+            'alabama'=>'AL','alaska'=>'AK','arizona'=>'AZ','arkansas'=>'AR','california'=>'CA',
+            'colorado'=>'CO','connecticut'=>'CT','delaware'=>'DE','florida'=>'FL','georgia'=>'GA',
+            'hawaii'=>'HI','idaho'=>'ID','illinois'=>'IL','indiana'=>'IN','iowa'=>'IA',
+            'kansas'=>'KS','kentucky'=>'KY','louisiana'=>'LA','maine'=>'ME','maryland'=>'MD',
+            'massachusetts'=>'MA','michigan'=>'MI','minnesota'=>'MN','mississippi'=>'MS','missouri'=>'MO',
+            'montana'=>'MT','nebraska'=>'NE','nevada'=>'NV','new hampshire'=>'NH','new jersey'=>'NJ',
+            'new mexico'=>'NM','new york'=>'NY','north carolina'=>'NC','north dakota'=>'ND','ohio'=>'OH',
+            'oklahoma'=>'OK','oregon'=>'OR','pennsylvania'=>'PA','rhode island'=>'RI','south carolina'=>'SC',
+            'south dakota'=>'SD','tennessee'=>'TN','texas'=>'TX','utah'=>'UT','vermont'=>'VT',
+            'virginia'=>'VA','washington'=>'WA','west virginia'=>'WV','wisconsin'=>'WI','wyoming'=>'WY',
+            'district of columbia'=>'DC',
+        ];
+        return $map[strtolower(trim($name))] ?? null;
     }
 
     private function indiaStateCode(string $name): ?string
