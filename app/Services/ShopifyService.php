@@ -573,17 +573,35 @@ GQL;
         $zip = trim((string) ($context['zip'] ?? ''));
         $city = trim((string) ($context['city'] ?? ''));
 
+        $tax = 0;
+        $duties = 0;
+        $rates = [];
+
         $calculated = $this->calculateShippingViaDraftOrder($countryCode, $provinceCode, $items, $zip, $city);
         if (!empty($calculated['rates'])) {
-            return $calculated;
+            $rates = array_merge($rates, $calculated['rates']);
+            $tax = (int) ($calculated['tax_amount'] ?? 0);
+            $duties = (int) ($calculated['duties_amount'] ?? 0);
         }
 
-        $rates = $this->shippingRatesFromZones($countryCode, $provinceCode, $subtotalCents);
+        $rates = array_merge($rates, $this->shippingRatesFromDeliveryProfiles($countryCode, $provinceCode, $subtotalCents));
+        $rates = array_merge($rates, $this->shippingRatesFromZones($countryCode, $provinceCode, $subtotalCents));
+
+        $unique = [];
+        $out = [];
+        foreach ($rates as $rate) {
+            $key = ($rate['title'] ?? '') . '|' . ($rate['price'] ?? 0);
+            if (isset($unique[$key])) {
+                continue;
+            }
+            $unique[$key] = true;
+            $out[] = $rate;
+        }
 
         return [
-            'rates' => $rates,
-            'tax_amount' => 0,
-            'duties_amount' => 0,
+            'rates' => $out,
+            'tax_amount' => $tax,
+            'duties_amount' => $duties,
         ];
     }
 
@@ -606,7 +624,8 @@ GQL;
 
         $address = [
             'countryCode' => $country,
-            'address1' => 'Checkout',
+            'country' => $this->getCountryName($country),
+            'address1' => 'Address',
         ];
         if ($province) {
             $address['provinceCode'] = strtoupper($province);
@@ -635,14 +654,24 @@ GQL;
 GQL;
 
         try {
-            $data = $this->graphql($mutation, [
-                'input' => [
+            $response = Http::withHeaders([
+                'X-Shopify-Access-Token' => $this->accessToken,
+                'Content-Type' => 'application/json',
+            ])->timeout(25)->post(
+                "https://{$this->shopDomain}/admin/api/{$this->apiVersion}/graphql.json",
+                ['query' => $mutation, 'variables' => ['input' => [
                     'lineItems' => $lineItems,
                     'shippingAddress' => $address,
-                ],
-            ]);
-            $calc = $data['draftOrderCalculate']['calculatedDraftOrder'] ?? null;
-            $errors = $data['draftOrderCalculate']['userErrors'] ?? [];
+                ]]]
+            );
+
+            $json = $response->json() ?? [];
+            if (!empty($json['errors'])) {
+                Log::warning('draftOrderCalculate GraphQL errors', ['errors' => $json['errors']]);
+            }
+
+            $calc = $json['data']['draftOrderCalculate']['calculatedDraftOrder'] ?? null;
+            $errors = $json['data']['draftOrderCalculate']['userErrors'] ?? [];
             if (!empty($errors)) {
                 Log::info('draftOrderCalculate userErrors', ['errors' => $errors]);
             }
@@ -663,12 +692,121 @@ GQL;
             return [
                 'rates' => $rates,
                 'tax_amount' => (int) round(((float) ($calc['totalTaxSet']['shopMoney']['amount'] ?? 0)) * 100),
-                'duties_amount' => (int) round(((float) ($calc['totalDutiesSet']['shopMoney']['amount'] ?? 0)) * 100),
+                'duties_amount' => 0,
             ];
         } catch (\Throwable $e) {
             Log::warning('draftOrderCalculate failed', ['error' => $e->getMessage()]);
             return ['rates' => [], 'tax_amount' => 0, 'duties_amount' => 0];
         }
+    }
+
+    private function shippingRatesFromDeliveryProfiles(string $countryCode, ?string $provinceCode, int $subtotalCents): array
+    {
+        $query = <<<'GQL'
+        {
+            deliveryProfiles(first: 10) {
+                nodes {
+                    profileLocationGroups {
+                        locationGroupZones(first: 30) {
+                            nodes {
+                                zone {
+                                    name
+                                    countries {
+                                        code { countryCode }
+                                        restOfWorld
+                                        provinces { code }
+                                    }
+                                }
+                                methodDefinitions(first: 20) {
+                                    nodes {
+                                        name
+                                        active
+                                        rateProvider {
+                                            __typename
+                                            ... on DeliveryRateDefinition {
+                                                price { amount }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+GQL;
+
+        try {
+            $response = Http::withHeaders([
+                'X-Shopify-Access-Token' => $this->accessToken,
+                'Content-Type' => 'application/json',
+            ])->timeout(20)->post(
+                "https://{$this->shopDomain}/admin/api/{$this->apiVersion}/graphql.json",
+                ['query' => $query]
+            );
+            $json = $response->json() ?? [];
+            if (!empty($json['errors'])) {
+                Log::warning('deliveryProfiles errors', ['errors' => $json['errors']]);
+            }
+
+            $rates = [];
+            foreach (($json['data']['deliveryProfiles']['nodes'] ?? []) as $profile) {
+                foreach (($profile['profileLocationGroups'] ?? []) as $group) {
+                    foreach (($group['locationGroupZones']['nodes'] ?? []) as $zoneNode) {
+                        if (!$this->deliveryZoneMatches($zoneNode['zone'] ?? [], $countryCode, $provinceCode)) {
+                            continue;
+                        }
+                        foreach (($zoneNode['methodDefinitions']['nodes'] ?? []) as $method) {
+                            if (isset($method['active']) && !$method['active']) {
+                                continue;
+                            }
+                            $provider = $method['rateProvider'] ?? [];
+                            if (($provider['__typename'] ?? '') !== 'DeliveryRateDefinition') {
+                                continue;
+                            }
+                            $amount = (float) ($provider['price']['amount'] ?? 0);
+                            $rates[] = [
+                                'title' => $method['name'] ?? 'Shipping',
+                                'code' => strtolower(str_replace(' ', '_', $method['name'] ?? 'shipping')),
+                                'price' => (int) round($amount * 100),
+                            ];
+                        }
+                    }
+                }
+            }
+            return $rates;
+        } catch (\Throwable $e) {
+            Log::warning('deliveryProfiles failed', ['error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    private function deliveryZoneMatches(array $zone, string $countryCode, ?string $provinceCode): bool
+    {
+        $countries = $zone['countries'] ?? [];
+        if (empty($countries)) {
+            return true;
+        }
+        foreach ($countries as $country) {
+            if (!empty($country['restOfWorld'])) {
+                return true;
+            }
+            $code = strtoupper((string) ($country['code']['countryCode'] ?? $country['code'] ?? ''));
+            if ($code === '' || $code === '*' || $code === $countryCode) {
+                $provinces = $country['provinces'] ?? [];
+                if (empty($provinces) || empty($provinceCode)) {
+                    return true;
+                }
+                foreach ($provinces as $p) {
+                    $pcode = strtoupper((string) ($p['code'] ?? ''));
+                    if ($pcode === strtoupper((string) $provinceCode)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     private function shippingRatesFromZones(string $countryCode, ?string $provinceCode, int $subtotalCents): array
@@ -678,24 +816,23 @@ GQL;
         try {
             $data = $this->rest('GET', 'shipping_zones.json');
             foreach (($data['shipping_zones'] ?? []) as $zone) {
-                $matches = false;
-                foreach (($zone['countries'] ?? []) as $country) {
+                $countries = $zone['countries'] ?? [];
+                $matches = empty($countries);
+                foreach ($countries as $country) {
                     $code = strtoupper((string) ($country['code'] ?? ''));
-                    if ($code !== '*' && $code !== $countryCode) {
-                        continue;
-                    }
-                    $provinces = $country['provinces'] ?? [];
-                    if (empty($provinces) || empty($provinceCode)) {
-                        $matches = true;
-                        break;
-                    }
-                    foreach ($provinces as $p) {
-                        if (strtoupper((string) ($p['code'] ?? '')) === strtoupper((string) $provinceCode)) {
+                    if ($code === '' || $code === '*' || $code === $countryCode) {
+                        $provinces = $country['provinces'] ?? [];
+                        if (empty($provinces) || empty($provinceCode)) {
                             $matches = true;
-                            break 2;
+                            break;
+                        }
+                        foreach ($provinces as $p) {
+                            if (strtoupper((string) ($p['code'] ?? '')) === strtoupper((string) $provinceCode)) {
+                                $matches = true;
+                                break 2;
+                            }
                         }
                     }
-                    $matches = true;
                 }
 
                 if (!$matches) {
@@ -705,7 +842,8 @@ GQL;
                 $subtotal = $subtotalCents / 100;
                 foreach (($zone['price_based_shipping_rates'] ?? []) as $rate) {
                     $min = (float) ($rate['min_order_subtotal'] ?? 0);
-                    $max = $rate['max_order_subtotal'] !== null ? (float) $rate['max_order_subtotal'] : null;
+                    $maxRaw = $rate['max_order_subtotal'] ?? null;
+                    $max = ($maxRaw !== null && $maxRaw !== '') ? (float) $maxRaw : null;
                     if ($subtotal < $min) {
                         continue;
                     }
@@ -731,18 +869,7 @@ GQL;
             Log::warning('getShippingRates zones failed', ['error' => $e->getMessage()]);
         }
 
-        $unique = [];
-        $out = [];
-        foreach ($rates as $rate) {
-            $key = $rate['title'] . '|' . $rate['price'];
-            if (isset($unique[$key])) {
-                continue;
-            }
-            $unique[$key] = true;
-            $out[] = $rate;
-        }
-
-        return $out;
+        return $rates;
     }
 
     // ================================================================
