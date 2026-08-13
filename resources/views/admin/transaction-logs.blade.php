@@ -41,7 +41,7 @@
         <tbody>
             @foreach($logs as $log)
             <tr>
-                <td><code style="font-size:11px;color:#667eea;">{{ substr($log->session_id, 0, 12) }}...</code></td>
+                <td><code style="font-size:11px;color:#0f766e;">{{ substr($log->session_id, 0, 12) }}...</code></td>
                 <td style="font-size:12px;">Tenant #{{ $log->tenant_id ?? '—' }}</td>
                 <td>{{ $log->customer_email ?? '—' }}</td>
                 <td style="font-weight:700;">{{ $log->formatted_total }}</td>

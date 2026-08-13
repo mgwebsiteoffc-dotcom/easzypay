@@ -59,7 +59,7 @@
             @forelse($orders as $order)
             <tr>
                 <td>
-                    <code style="font-size:11px;color:#667eea;">
+                    <code style="font-size:11px;color:#0f766e;">
                         {{ substr($order->session_id, 0, 16) }}...
                     </code>
                 </td>

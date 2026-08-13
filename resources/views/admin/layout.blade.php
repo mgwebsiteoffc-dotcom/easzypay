@@ -4,24 +4,24 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>@yield('title', 'Dashboard') — QuickPay Admin</title>
+    <title>@yield('title', 'Dashboard') — EaszyPay Admin</title>
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         :root {
-            --primary:    #667eea;
-            --primary-dk: #5a67d8;
+            --primary:    #0f766e;
+            --primary-dk: #134e4a;
             --sidebar-w:  240px;
-            --header-h:   60px;
-            --success:    #10b981;
-            --danger:     #ef4444;
-            --warning:    #f59e0b;
-            --gray-50:    #f9fafb;
-            --gray-100:   #f3f4f6;
-            --gray-200:   #e5e7eb;
-            --gray-500:   #6b7280;
+            --header-h:   64px;
+            --success:    #0f766e;
+            --danger:     #b42318;
+            --warning:    #b45309;
+            --gray-50:    #f6f4ef;
+            --gray-100:   #efece4;
+            --gray-200:   #e6e9f0;
+            --gray-500:   #5b6578;
             --gray-700:   #374151;
-            --gray-900:   #111827;
+            --gray-900:   #0b1220;
         }
 
         html { -webkit-font-smoothing: antialiased; }
@@ -37,8 +37,8 @@
         /* ---- Sidebar ---- */
         .sidebar {
             width: var(--sidebar-w);
-            background: #1e1b4b;
-            color: white;
+            background: #0b1220;
+            color: #f4efe6;
             position: fixed;
             top: 0; left: 0; bottom: 0;
             display: flex;
@@ -49,14 +49,17 @@
 
         .sidebar-logo {
             padding: 20px 20px 16px;
-            font-size: 18px;
+            font-size: 20px;
             font-weight: 800;
-            color: #a5b4fc;
+            color: #f4efe6;
+            letter-spacing: -0.03em;
+            font-family: "Iowan Old Style", Palatino, Georgia, serif;
             border-bottom: 1px solid rgba(255,255,255,0.08);
             display: flex;
             align-items: center;
             gap: 8px;
         }
+        .sidebar-logo span { color: #5eead4; }
 
         .sidebar-section {
             padding: 16px 12px 8px;
@@ -105,7 +108,8 @@
         /* ---- Top Bar ---- */
         .topbar {
             height: var(--header-h);
-            background: white;
+            background: rgba(246,244,239,0.92);
+            backdrop-filter: blur(12px);
             border-bottom: 1px solid var(--gray-200);
             display: flex;
             align-items: center;
@@ -361,7 +365,7 @@
 
         .chart-bar {
             width: 100%;
-            background: linear-gradient(180deg, var(--primary) 0%, #764ba2 100%);
+            background: var(--primary);
             border-radius: 4px 4px 0 0;
             min-height: 4px;
             transition: height 0.3s ease;
@@ -411,8 +415,8 @@
 <!-- Sidebar -->
 <aside class="sidebar">
     <div class="sidebar-logo">
-        ⚡ QuickPay
-        <span style="font-size:10px;background:rgba(255,255,255,0.15);padding:2px 6px;border-radius:4px;margin-left:4px;">Admin</span>
+        Easzy<span>Pay</span>
+        <span style="font-size:10px;background:rgba(255,255,255,0.15);padding:2px 6px;border-radius:4px;margin-left:4px;font-family:sans-serif;">Admin</span>
     </div>
 
     <div style="padding: 12px 8px; flex: 1;">

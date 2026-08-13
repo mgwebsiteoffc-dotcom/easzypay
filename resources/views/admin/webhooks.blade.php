@@ -45,7 +45,7 @@
                     </span>
                 </td>
                 <td style="font-family:monospace;font-size:12px;">{{ $webhook->event_type }}</td>
-                <td style="font-family:monospace;font-size:11px;color:#667eea;">
+                <td style="font-family:monospace;font-size:11px;color:#0f766e;">
                     {{ substr($webhook->event_id ?? '—', 0, 20) }}
                 </td>
                 <td>

@@ -5,7 +5,7 @@
 @section('content')
 
 <div style="margin-bottom:20px;">
-    <a href="{{ route('admin.orders') }}" style="color:#667eea;text-decoration:none;font-size:14px;">
+    <a href="{{ route('admin.orders') }}" style="color:#0f766e;text-decoration:none;font-size:14px;">
         ← Back to Orders
     </a>
 </div>
@@ -17,7 +17,7 @@
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
             <div>
                 <div class="stat-label">Session ID</div>
-                <code style="font-size:13px;color:#667eea;">{{ $session->session_id }}</code>
+                <code style="font-size:13px;color:#0f766e;">{{ $session->session_id }}</code>
             </div>
             <div>
                 @switch($session->status)
@@ -176,7 +176,7 @@
                     @else —
                     @endif
                 </td>
-                <td style="font-family:monospace;font-size:11px;color:#667eea;">
+                <td style="font-family:monospace;font-size:11px;color:#0f766e;">
                     {{ $log->stripe_payment_intent_id ?? $log->stripe_charge_id ?? '—' }}
                 </td>
                 <td style="font-size:12px;color:#9ca3af;">

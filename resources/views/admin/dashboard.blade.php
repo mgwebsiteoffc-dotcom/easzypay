@@ -106,7 +106,7 @@
                 <div style="font-weight:700;font-size:14px;">{{ $item->charged_currency }}</div>
                 <div style="font-size:11px;color:#9ca3af;">{{ $item->count }} orders</div>
             </div>
-            <div style="font-weight:700;color:#667eea;">
+            <div style="font-weight:700;color:#0f766e;">
                 ${{ number_format($item->total, 2) }}
             </div>
         </div>
@@ -166,7 +166,7 @@
             <tr>
                 <td>
                     <a href="{{ route('admin.orders.detail', $order->session_id) }}"
-                       style="color:#667eea;font-family:monospace;font-size:12px;text-decoration:none;">
+                       style="color:#0f766e;font-family:monospace;font-size:12px;text-decoration:none;">
                         {{ substr($order->session_id, 0, 12) }}...
                     </a>
                 </td>

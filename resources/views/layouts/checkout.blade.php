@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>@yield('title', 'Secure Checkout') — QuickPay</title>
+    <title>@yield('title', 'Secure Checkout') — EaszyPay</title>
 
     <!-- Stripe.js -->
     <script src="https://js.stripe.com/v3/"></script>
@@ -16,8 +16,8 @@
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         :root {
-            --primary:    #667eea;
-            --primary-dk: #5a67d8;
+            --primary:    #0f766e;
+            --primary-dk: #134e4a;
             --success:    #10b981;
             --danger:     #ef4444;
             --warning:    #f59e0b;
@@ -73,10 +73,8 @@
             font-size: 20px;
             font-weight: 800;
             letter-spacing: -0.5px;
-            background: linear-gradient(135deg, var(--primary) 0%, #764ba2 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            color: #0b1220;
+            font-family: "Iowan Old Style", Palatino, Georgia, serif;
             text-decoration: none;
         }
 
@@ -311,7 +309,7 @@
         .qp-pay-btn {
             width: 100%;
             height: 54px;
-            background: linear-gradient(135deg, var(--primary) 0%, #764ba2 100%);
+            background: #0b1220;
             color: white;
             border: none;
             border-radius: 10px;
@@ -674,7 +672,7 @@
 
 <!-- Header -->
 <header class="qp-header">
-    <a href="/" class="qp-logo">⚡ QuickPay</a>
+    <a href="/" class="qp-logo">EaszyPay</a>
     <div class="qp-secure">🔒 SSL Secure Checkout</div>
 </header>
 
