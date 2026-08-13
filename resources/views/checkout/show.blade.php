@@ -352,10 +352,9 @@ body {
 
 /* PAYMENT */
 #payment-element {
-    background: var(--bg-input);
-    border: 1px solid var(--border-light);
-    border-radius: 6px;
-    padding: 16px;
+    background: transparent;
+    border: none;
+    padding: 0;
 }
 
 .pay-loading {
@@ -954,14 +953,16 @@ async function applyDiscountCode() {
             S.discount = d.discount_percent || 0;
             S.discountAmount = d.discount_amount || 0;
             S.freeShipping = !!d.free_shipping;
-            S.discountCode = code;
+            S.discountCode = d.code || code;
+            hideError();
             updatePrices(S.currency, S.amount, S.rate);
+            if (typeof refreshPaymentForTotal === 'function') refreshPaymentForTotal();
             $('applyDiscount').textContent = '✓ Applied';
             $('applyDiscount').style.background = 'var(--success)';
             $('applyDiscount').style.color = '#fff';
             $('discountCode').disabled = true;
         } else {
-            alert(d.error || 'Invalid discount code');
+            showError(d.error || 'Enter a valid discount code');
             $('applyDiscount').textContent = 'Apply';
             $('applyDiscount').disabled = false;
         }
@@ -1326,6 +1327,50 @@ function validate() {
         {id:'fn', ck: function(v){return v.length > 0;}, m: 'First name required'},
         {id:'ln', ck: function(v){return v.length > 0;}, m: 'Last name required'},
         {id:'a1', ck: function(v){return v.length > 0;}, m: 'Address required'},
+        {id:'city', ck: function(v){return v.length > 0;}, m: 'City required'},
+        {id:'zip', ck: function(v){return v.length > 0;}, m: 'PIN code required'}
+    ];
+    f.forEach(function(x) { var e = $(x.id); if (e) e.classList.remove('is-invalid'); });
+    for (var i = 0; i < f.length; i++) {
+        var x = f[i], e = $(x.id), v = e ? e.value.trim() : '';
+        if (!x.ck(v)) {
+            if (e) { e.classList.add('is-invalid'); e.scrollIntoView({behavior:'smooth', block:'center'}); e.focus(); }
+            showError(x.m);
+            return false;
+        }
+    }
+    return true;
+}
+
+function setLoading(on) {
+    $('payBtn').disabled = on;
+    $('paySpn').style.display = on ? 'inline-block' : 'none';
+    $('payTxt').textContent = on ? 'PROCESSING...' : ('PAY ' + money(S.finalAmount || S.amount, S.currency));
+}
+function showError(msg) {
+    $('errBox').textContent = msg;
+    $('errBox').style.display = 'block';
+    $('errBox').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+function hideError() { $('errBox').style.display = 'none'; }
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, function(ch) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]);
+    });
+}
+
+init();
+</script>
+
+<footer class="policy-footer" id="policyFooter">
+    <a id="polShipping" href="#" target="_blank" rel="noopener">Shipping policy</a>
+    <a id="polRefund" href="#" target="_blank" rel="noopener">Refund policy</a>
+    <a id="polPrivacy" href="#" target="_blank" rel="noopener">Privacy policy</a>
+    <a id="polTerms" href="#" target="_blank" rel="noopener">Terms of service</a>
+</footer>
+</body>
+</html>
+ss required'},
         {id:'city', ck: function(v){return v.length > 0;}, m: 'City required'},
         {id:'zip', ck: function(v){return v.length > 0;}, m: 'PIN code required'}
     ];
