@@ -38,7 +38,7 @@
         .topbar{height:var(--topbar-h);background:rgba(246,244,239,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 28px;position:sticky;top:0;z-index:50}
         .topbar-title{font-size:20px;font-weight:700;font-family:"Iowan Old Style",Palatino,Georgia,serif;letter-spacing:-0.02em}
         .topbar-date{font-size:13px;color:var(--muted)}
-        .content{flex:1;padding:28px;max-width:1180px}
+        .content{flex:1;padding:28px 32px;width:100%;}
 
         .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px;margin-bottom:24px}
         .stat{background:var(--white);border:1px solid var(--line);border-radius:16px;padding:18px 18px 16px}
