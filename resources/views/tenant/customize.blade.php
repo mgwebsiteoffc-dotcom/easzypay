@@ -146,7 +146,7 @@
 
     <div style="background:#1e1b4b;color:#a5b4fc;border-radius:8px;padding:14px;font-family:monospace;font-size:12px;position:relative;margin-bottom:12px;">
         <button type="button" onclick="copySnippet()" style="position:absolute;top:8px;right:8px;background:rgba(255,255,255,0.1);color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:11px;cursor:pointer;">📋 Copy</button>
-        <code id="snippetCode">&#123;%- render 'easzypay-button' -%&#125;</code>
+        <code id="snippetCode">&#123;%- render 'easzypay-button', product: product -%&#125;</code>
     </div>
 
     <p style="font-size:12px;color:var(--g500);line-height:1.7;">

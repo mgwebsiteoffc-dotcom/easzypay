@@ -232,27 +232,65 @@ class ShopifyService
 
             $paidCurrency   = strtoupper((string) ($session->charged_currency ?? $session->currency ?? $shopCurrency));
             $orderCurrency  = $shopCurrency;
-            $total         = (int) ($session->total_amount ?? $session->subtotal ?? 0);
 
-            // If the checkout was paid in a local currency, reverse the conversion using
-            // the stored exchange rate to keep the Shopify order total in shop currency.
-            if (!empty($session->charged_amount) && !empty($session->exchange_rate) && $session->exchange_rate > 0) {
-                $reverseTotal = (int) round($session->charged_amount / $session->exchange_rate);
-                Log::info('Reversing local currency total for Shopify order', [
-                    'charged_amount'  => $session->charged_amount,
-                    'charged_currency'=> $session->charged_currency,
-                    'exchange_rate'   => $session->exchange_rate,
-                    'reverse_total'   => $reverseTotal,
-                    'shop_currency'   => $shopCurrency,
-                ]);
-                if ($reverseTotal > 0) {
-                    $total = $reverseTotal;
+            // ============================================
+            // ORDER TOTAL - MUST BE IN SHOP CURRENCY
+            // ============================================
+            // subtotal / total_amount are captured from the Shopify cart in the
+            // shop's currency (cents). They are the authoritative order total.
+            // We must NEVER use charged_amount here: when the customer pays in a
+            // local currency (e.g. GBP), charged_amount is in that local currency.
+            // Sending it to Shopify as the shop-currency total makes Shopify
+            // re-convert it again on the thank-you page (e.g. GBP amount treated
+            // as USD and converted back to GBP), showing a wrong total.
+            $total = 0;
+
+            if ((int) ($session->subtotal ?? 0) > 0) {
+                $total = max(0, (int) $session->subtotal - $discountAmount);
+            } elseif ((int) ($session->total_amount ?? 0) > 0) {
+                $total = max(0, (int) $session->total_amount - $discountAmount);
+            }
+
+            // Last-resort fallback for legacy/edge sessions: reverse-convert the
+            // charged local amount back to shop currency. Only valid when a real
+            // FX rate (shop currency -> local currency) is stored and differs
+            // meaningfully from 1:1; a rate of 1.0 means "no conversion data".
+            if ($total <= 0
+                && !empty($session->charged_amount)
+                && !empty($session->exchange_rate)
+                && (float) $session->exchange_rate > 0
+            ) {
+                $rate = (float) $session->exchange_rate;
+
+                if (abs($rate - 1.0) > 0.000001) {
+                    $reverseTotal = (int) round($session->charged_amount / $rate);
+
+                    Log::info('Reverse-converting local amount to shop currency for Shopify order', [
+                        'charged_amount'   => $session->charged_amount,
+                        'charged_currency' => $session->charged_currency,
+                        'exchange_rate'    => $rate,
+                        'reverse_total'    => $reverseTotal,
+                        'shop_currency'    => $shopCurrency,
+                    ]);
+
+                    if ($reverseTotal > 0) {
+                        $total = $reverseTotal;
+                    }
                 }
             }
 
-            if ($total === 0) {
-                $total = (int) ($session->charged_amount ?? $session->subtotal ?? 0);
+            if ($total <= 0) {
+                $total = (int) ($session->subtotal ?? $session->charged_amount ?? 0);
             }
+
+            Log::info('Shopify order total resolved', [
+                'subtotal'        => (int) ($session->subtotal ?? 0),
+                'discount_amount' => $discountAmount,
+                'charged_amount'  => (int) ($session->charged_amount ?? 0),
+                'charged_currency'=> $paidCurrency,
+                'order_total'     => $total,
+                'order_currency'  => $orderCurrency,
+            ]);
 
             $orderTotalString = number_format($total / 100, 2, '.', '');
 
@@ -547,37 +585,87 @@ return [
     }
 
     // ================================================================
-    // Inject Theme Button
+    // Inject Theme Button (snippet file + render tag in product section)
     // ================================================================
-public function injectThemeSnippet(string $snippetContent): array
-{
-    try {
-        // Step 1: Get active theme via REST
+    public function injectThemeSnippet(string $snippetContent): array
+    {
+        try {
+            $theme = $this->getMainTheme();
+
+            if (!$theme) {
+                throw new \RuntimeException('No active (main) theme found on this store');
+            }
+
+            $themeId = $theme['id'];
+
+            Log::info('Found active theme', [
+                'theme_id'   => $themeId,
+                'theme_name' => $theme['name'] ?? 'unknown',
+            ]);
+
+            // Step 1: Upload the snippet file (REST first, GraphQL fallback)
+            $uploadMethod = $this->uploadThemeAsset(
+                $themeId,
+                'snippets/easzypay-button.liquid',
+                $snippetContent
+            );
+
+            if (!$uploadMethod) {
+                throw new \RuntimeException('Could not upload the EaszyPay snippet file to the theme');
+            }
+
+            Log::info('Button snippet uploaded', ['theme_id' => $themeId, 'method' => $uploadMethod]);
+
+            // Step 2: Make sure the product section actually renders the snippet.
+            // Uploading the file alone is not enough — the section must contain a
+            // {% render %} tag, otherwise customizations (and the button itself)
+            // never show on the storefront.
+            $include = $this->ensureButtonInProductSection($themeId);
+
+            Log::info('Button include status', [
+                'theme_id' => $themeId,
+                'status'   => $include['status'],
+                'asset'    => $include['asset'] ?? null,
+            ]);
+
+            return [
+                'success'       => true,
+                'theme_id'      => $themeId,
+                'method'        => $uploadMethod,
+                'include_status'=> $include['status'],
+                'include_asset' => $include['asset'] ?? null,
+            ];
+
+        } catch (\Throwable $e) {
+            Log::error('Theme snippet injection failed', [
+                'error' => $e->getMessage(),
+                'shop'  => $this->shopDomain,
+            ]);
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    // ================================================================
+    // Get the store's main (published) theme
+    // ================================================================
+    private function getMainTheme(): ?array
+    {
         $themes = $this->rest('GET', 'themes.json');
 
-        $activeTheme = null;
         foreach ($themes['themes'] ?? [] as $theme) {
-            if ($theme['role'] === 'main') {
-                $activeTheme = $theme;
-                break;
+            if (($theme['role'] ?? '') === 'main') {
+                return $theme;
             }
         }
 
-        if (!$activeTheme) {
-            throw new \RuntimeException('No active theme found');
-        }
+        return null;
+    }
 
-        $themeId = $activeTheme['id'];
-
-        Log::info('Found active theme', [
-            'theme_id'   => $themeId,
-            'theme_name' => $activeTheme['name'] ?? 'unknown',
-        ]);
-        Log::info('Shopify API version', [
-    'version' => $this->apiVersion,
-]);
-
-        // Step 2: Try REST API first (faster)
+    // ================================================================
+    // Upload/update a theme asset file (REST, then GraphQL fallback)
+    // ================================================================
+    private function uploadThemeAsset(int|string $themeId, string $key, string $value): ?string
+    {
         try {
             $restResult = Http::withHeaders([
                 'X-Shopify-Access-Token' => $this->accessToken,
@@ -586,81 +674,257 @@ public function injectThemeSnippet(string $snippetContent): array
                 "https://{$this->shopDomain}/admin/api/{$this->apiVersion}/themes/{$themeId}/assets.json",
                 [
                     'asset' => [
-                        'key'   => 'snippets/easzypay-button.liquid',
-                        'value' => $snippetContent,
+                        'key'   => $key,
+                        'value' => $value,
                     ],
                 ]
             );
 
             if ($restResult->ok()) {
-                Log::info('Button uploaded via REST', ['theme_id' => $themeId]);
-                return ['success' => true, 'theme_id' => $themeId, 'method' => 'rest'];
+                return 'rest';
             }
 
-            Log::warning('REST upload failed, trying GraphQL', [
+            Log::warning('REST asset upload failed, trying GraphQL', [
+                'key'    => $key,
                 'status' => $restResult->status(),
                 'body'   => substr($restResult->body(), 0, 200),
             ]);
         } catch (\Throwable $e) {
-            Log::warning('REST upload exception', ['error' => $e->getMessage()]);
+            Log::warning('REST asset upload exception', ['key' => $key, 'error' => $e->getMessage()]);
         }
 
-        // Step 3: Fallback to GraphQL themeFilesUpsert (new API)
-        $themeGid = "gid://shopify/OnlineStoreTheme/{$themeId}";
+        try {
+            $themeGid = "gid://shopify/OnlineStoreTheme/{$themeId}";
 
-        $mutation = <<<'GQL'
-        mutation themeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
-            themeFilesUpsert(themeId: $themeId, files: $files) {
-                upsertedThemeFiles {
-                    filename
-                }
-                userErrors {
-                    field
-                    message
+            $mutation = <<<'GQL'
+            mutation themeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
+                themeFilesUpsert(themeId: $themeId, files: $files) {
+                    upsertedThemeFiles { filename }
+                    userErrors { field message code }
                 }
             }
-        }
 GQL;
 
-        $variables = [
-            'themeId' => $themeGid,
-            'files'   => [
-                [
-                    'filename' => 'snippets/easzypay-button.liquid',
-                    'body'     => [
-                        'type'  => 'TEXT',
-                        'value' => $snippetContent,
+            $result = $this->graphql($mutation, [
+                'themeId' => $themeGid,
+                'files'   => [
+                    [
+                        'filename' => $key,
+                        'body'     => ['type' => 'TEXT', 'value' => $value],
                     ],
                 ],
-            ],
-        ];
+            ]);
 
-        $result      = $this->graphql($mutation, $variables);
-        $upsertData  = $result['themeFilesUpsert'] ?? [];
-        $userErrors  = $upsertData['userErrors'] ?? [];
+            $upsertData = $result['themeFilesUpsert'] ?? [];
+            $userErrors = $upsertData['userErrors'] ?? [];
 
-        if (!empty($userErrors)) {
-            $msg = collect($userErrors)->map(fn($e) => ($e['field'] ?? '?') . ': ' . $e['message'])->implode('; ');
-            throw new \RuntimeException("GraphQL theme upsert: {$msg}");
+            if (!empty($userErrors)) {
+                $msg = collect($userErrors)
+                    ->map(fn($e) => implode('.', (array) ($e['field'] ?? '?')) . ': ' . ($e['message'] ?? '?'))
+                    ->implode('; ');
+                throw new \RuntimeException("GraphQL theme upsert: {$msg}");
+            }
+
+            if (!empty($upsertData['upsertedThemeFiles'])) {
+                return 'graphql';
+            }
+        } catch (\Throwable $e) {
+            Log::warning('GraphQL asset upload failed', ['key' => $key, 'error' => $e->getMessage()]);
         }
 
-        $uploaded = $upsertData['upsertedThemeFiles'] ?? [];
-
-        Log::info('Button uploaded via GraphQL', [
-            'theme_id'  => $themeId,
-            'files'     => count($uploaded),
-        ]);
-
-        return ['success' => true, 'theme_id' => $themeId, 'method' => 'graphql'];
-
-    } catch (\Throwable $e) {
-        Log::error('Theme snippet injection failed', [
-            'error' => $e->getMessage(),
-            'shop'  => $this->shopDomain,
-        ]);
-        return ['success' => false, 'error' => $e->getMessage()];
+        return null;
     }
-}
+
+    // ================================================================
+    // Read a theme asset file
+    // ================================================================
+    private function getThemeAsset(int|string $themeId, string $key): ?array
+    {
+        try {
+            $resp = Http::withHeaders([
+                'X-Shopify-Access-Token' => $this->accessToken,
+            ])->timeout(30)->get(
+                "https://{$this->shopDomain}/admin/api/{$this->apiVersion}/themes/{$themeId}/assets.json",
+                ['asset' => ['key' => $key]]
+            );
+
+            if ($resp->ok() && !empty($resp->json('asset'))) {
+                return $resp->json('asset');
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Theme asset read failed', ['key' => $key, 'error' => $e->getMessage()]);
+        }
+
+        return null;
+    }
+
+    // ================================================================
+    // Ensure the product section renders the EaszyPay button
+    // ================================================================
+    private function ensureButtonInProductSection(int|string $themeId): array
+    {
+        // Liquid files where product pages are defined, most common first.
+        // (JSON templates like templates/product.json cannot contain Liquid,
+        //  so the include must live in the section they reference.)
+        $candidates = [
+            'sections/main-product.liquid',
+            'sections/product-template.liquid',
+            'sections/product.liquid',
+            'sections/main-product-details.liquid',
+            'snippets/product-template.liquid',
+        ];
+
+        $assets = $this->listThemeAssets($themeId);
+
+        foreach ($candidates as $key) {
+            if (!in_array($key, $assets, true)) {
+                continue;
+            }
+
+            $asset = $this->getThemeAsset($themeId, $key);
+            $content = $asset['value'] ?? '';
+
+            if ($content === '') {
+                continue;
+            }
+
+            $status = $this->addButtonInclude($content);
+
+            if ($status['changed']) {
+                $uploaded = $this->uploadThemeAsset($themeId, $key, $status['content']);
+
+                if (!$uploaded) {
+                    Log::error('Could not write button include into theme section', ['key' => $key]);
+                    continue;
+                }
+
+                return ['status' => $status['action'], 'asset' => $key];
+            }
+
+            return ['status' => $status['action'], 'asset' => $key];
+        }
+
+        // Fallback: find any section that looks like the product template.
+        foreach ($assets as $key) {
+            if (!str_ends_with($key, '.liquid')) {
+                continue;
+            }
+            if (!preg_match('#(sections|snippets)/#', $key) || !str_contains($key, 'product')) {
+                continue;
+            }
+
+            $asset   = $this->getThemeAsset($themeId, $key);
+            $content = $asset['value'] ?? '';
+
+            if ($content === '' || !str_contains($content, 'product') || !str_contains($content, 'endform')) {
+                continue;
+            }
+
+            $status = $this->addButtonInclude($content);
+
+            if ($status['changed']) {
+                $uploaded = $this->uploadThemeAsset($themeId, $key, $status['content']);
+
+                if (!$uploaded) {
+                    continue;
+                }
+
+                return ['status' => $status['action'], 'asset' => $key];
+            }
+
+            return ['status' => $status['action'], 'asset' => $key];
+        }
+
+        return ['status' => 'product_section_not_found'];
+    }
+
+    // ================================================================
+    // List all theme asset keys
+    // ================================================================
+    private function listThemeAssets(int|string $themeId): array
+    {
+        try {
+            // The assets list endpoint returns every file of the theme in a
+            // single response (it has no since_id pagination).
+            $resp = Http::withHeaders([
+                'X-Shopify-Access-Token' => $this->accessToken,
+            ])->timeout(30)->get(
+                "https://{$this->shopDomain}/admin/api/{$this->apiVersion}/themes/{$themeId}/assets.json"
+            );
+
+            if (!$resp->ok()) {
+                Log::warning('Theme asset listing failed', ['status' => $resp->status()]);
+                return [];
+            }
+
+            $keys = [];
+            foreach ($resp->json('assets', []) as $a) {
+                if (!empty($a['key'])) {
+                    $keys[] = $a['key'];
+                }
+            }
+
+            return $keys;
+        } catch (\Throwable $e) {
+            Log::warning('Theme asset listing failed', ['error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    // ================================================================
+    // Add the EaszyPay render tag to a Liquid section (idempotent)
+    // ================================================================
+    private function addButtonInclude(string $content): array
+    {
+        // The snippet uses `product`, which is NOT available inside a plain
+        // {% render %} tag — it must be passed explicitly.
+        $canonical = "{%- render 'easzypay-button', product: product -%}";
+
+        // Already included correctly (canonical tag or any render that passes product)?
+        if (preg_match("#\{%-?\s*render\s+['\"]easzypay-button['\"][^%]*?\bproduct\s*:\s*product[^%]*?-?%\}#", $content)) {
+            return ['content' => $content, 'changed' => false, 'action' => 'already_present'];
+        }
+
+        // Legacy include without the product argument — replace it so the
+        // button actually receives product/variant data. The negative lookahead
+        // guarantees we never touch a tag that already passes product.
+        if (preg_match("#\{%-?\s*render\s+['\"]easzypay-button['\"](?![^%]*\bproduct\s*:)[^%]*?-?%\}#", $content)) {
+            $updated = preg_replace(
+                "#\{%-?\s*render\s+['\"]easzypay-button['\"](?![^%]*\bproduct\s*:)[^%]*?-?%\}#",
+                $canonical,
+                $content,
+                1
+            );
+
+            if ($updated !== null && $updated !== $content) {
+                return ['content' => $updated, 'changed' => true, 'action' => 'fixed_existing'];
+            }
+        }
+
+        $mark = "<!-- EaszyPay checkout button -->";
+        $block = $mark . "\n" . $canonical . "\n";
+
+        // Preferred spot: right after the first product form closes
+        // (directly below the Add to Cart button on most themes).
+        if (preg_match('#\{%-?\s*endform\s*-?%\}#', $content, $m, PREG_OFFSET_CAPTURE)) {
+            $pos = $m[0][1] + strlen($m[0][0]);
+            $updated = substr($content, 0, $pos) . "\n" . $block . substr($content, $pos);
+
+            return ['content' => $updated, 'changed' => true, 'action' => 'inserted_after_form'];
+        }
+
+        // Fallback: before the section's {% schema %} (must stay last).
+        if (preg_match('#\{%-?\s*schema\s*-?%\}#', $content, $m, PREG_OFFSET_CAPTURE)) {
+            $pos = $m[0][1];
+            $updated = substr($content, 0, $pos) . $block . "\n" . substr($content, $pos);
+
+            return ['content' => $updated, 'changed' => true, 'action' => 'inserted_before_schema'];
+        }
+
+        // Last resort: end of file.
+        return ['content' => rtrim($content) . "\n\n" . $block, 'changed' => true, 'action' => 'appended'];
+    }
+
 
     // ================================================================
     // Country Name

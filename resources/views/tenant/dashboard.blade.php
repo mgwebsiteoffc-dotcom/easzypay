@@ -114,7 +114,7 @@
                     <button type="button" onclick="copyCode('render-{{ $store->id }}', this)" class="btn btn-primary btn-sm">📋 Copy</button>
                 </div>
                 <div style="background:#1e1b4b;border-radius:8px;padding:16px;">
-                    <pre id="render-{{ $store->id }}" style="margin:0;color:#a5b4fc;font-family:'Courier New',monospace;font-size:13px;">{!! '{%- render \'easzypay-button\' -%}' !!}</pre>
+                    <pre id="render-{{ $store->id }}" style="margin:0;color:#a5b4fc;font-family:'Courier New',monospace;font-size:13px;">{!! '{%- render \'easzypay-button\', product: product -%}' !!}</pre>
                 </div>
             </div>
 

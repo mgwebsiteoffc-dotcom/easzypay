@@ -824,17 +824,40 @@ Route::middleware(\App\Http\Middleware\TenantAuth::class)->prefix('app')->name('
 
         $store->update($data);
 
-        // Re-inject button with new style
+        // Re-inject button with new style (uploads snippet + ensures the
+        // product section renders it, so new colors/text actually show)
         try {
+            if (empty($store->access_token)) {
+                throw new \RuntimeException('Store is not connected. Please reconnect your Shopify store.');
+            }
+
             $shopify = new \App\Services\ShopifyService($store->myshopify_domain, $store->access_token);
             $snippet = app(\App\Http\Controllers\Shopify\InstallController::class)->buildSnippet($store->id, config('app.url'), $store);
-            $shopify->injectThemeSnippet($snippet);
+            $result  = $shopify->injectThemeSnippet($snippet);
 
-            $store->update(['button_injected_at' => now()]);
+            if (empty($result['success'])) {
+                throw new \RuntimeException($result['error'] ?? 'Theme update failed');
+            }
 
-            return back()->with('success', '✅ Customization saved and button updated on your Shopify theme!');
+            $store->update([
+                'button_injected_at' => now(),
+                'button_active'      => true,
+            ]);
+
+            $msg = '✅ Customization saved and button updated on your Shopify theme!';
+
+            if (($result['include_status'] ?? null) === 'product_section_not_found') {
+                $msg .= ' Note: your product template could not be updated automatically — add the one-line code from below to your product page manually.';
+            }
+
+            return back()->with('success', $msg);
         } catch (\Throwable $e) {
-            return back()->with('success', '✅ Settings saved. Button update on Shopify failed: ' . $e->getMessage());
+            Log::error('Customize: Shopify theme update failed', [
+                'store_id' => $store->id,
+                'error'    => $e->getMessage(),
+            ]);
+
+            return back()->with('error', '✅ Settings saved, but the button could NOT be updated on Shopify: ' . $e->getMessage() . ' — use the manual install code below.');
         }
     })->name('customize.save');
 

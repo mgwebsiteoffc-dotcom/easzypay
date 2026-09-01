@@ -269,135 +269,27 @@ class InstallController extends Controller
 
 private function injectButton(string $shop, string $token, Store $store): void
 {
-    $appUrl  = config('app.url');
-    $version = config('services.shopify.api_version', '2026-01');
+    Log::info('Starting theme button injection', ['shop' => $shop]);
 
-    Log::info('Starting theme button injection', [
-        'shop'    => $shop,
-        'version' => $version,
-    ]);
+    // Build the snippet with the store's current customization and hand it to
+    // the shared service: it uploads the snippet file AND makes sure the
+    // product section renders it (a missing render tag is why customizations
+    // / buttons fail to show on the storefront).
+    $snippet = $this->buildSnippet($store->id, config('app.url'), $store);
 
-    // ============================================
-    // Step 1: Get active theme
-    // ============================================
-    $themeResponse = Http::withHeaders([
-        'X-Shopify-Access-Token' => $token,
-    ])->timeout(15)->get("https://{$shop}/admin/api/{$version}/themes.json");
+    $service = new \App\Services\ShopifyService($shop, $token);
+    $result  = $service->injectThemeSnippet($snippet);
 
-    if (!$themeResponse->ok()) {
-        throw new \Exception('Cannot fetch themes: HTTP ' . $themeResponse->status() . ' - ' . substr($themeResponse->body(), 0, 200));
+    if (empty($result['success'])) {
+        throw new \Exception($result['error'] ?? 'Theme injection failed');
     }
 
-    $activeTheme = null;
-    foreach ($themeResponse->json('themes', []) as $theme) {
-        if ($theme['role'] === 'main') {
-            $activeTheme = $theme;
-            break;
-        }
-    }
-
-    if (!$activeTheme) {
-        throw new \Exception('No active main theme found');
-    }
-
-    $themeId = $activeTheme['id'];
-
-    Log::info('Active theme found', [
-        'theme_id'      => $themeId,
-        'theme_name'    => $activeTheme['name'] ?? '?',
-        'theme_role'    => $activeTheme['role'] ?? '?',
-        'theme_updated' => $activeTheme['updated_at'] ?? '?',
-    ]);
-
-    // Build snippet content
-    $snippet = $this->buildSnippet($store->id, $appUrl, $store);
-
-    // ============================================
-    // Step 2: Try GraphQL themeFilesUpsert (PRIMARY METHOD for 2026)
-    // ============================================
-    $themeGid = "gid://shopify/OnlineStoreTheme/{$themeId}";
-
-    $mutation = <<<'GQL'
-    mutation themeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
-        themeFilesUpsert(themeId: $themeId, files: $files) {
-            upsertedThemeFiles {
-                filename
-                size
-            }
-            userErrors {
-                field
-                message
-                code
-            }
-        }
-    }
-GQL;
-
-    $variables = [
-        'themeId' => $themeGid,
-        'files'   => [
-            [
-                'filename' => 'snippets/easzypay-button.liquid',
-                'body'     => [
-                    'type'  => 'TEXT',
-                    'value' => $snippet,
-                ],
-            ],
-        ],
-    ];
-
-    Log::info('Calling GraphQL themeFilesUpsert', [
-        'theme_gid' => $themeGid,
-        'snippet_size' => strlen($snippet),
-    ]);
-
-    $graphqlResponse = Http::withHeaders([
-        'X-Shopify-Access-Token' => $token,
-        'Content-Type'           => 'application/json',
-    ])->timeout(30)->post(
-        "https://{$shop}/admin/api/{$version}/graphql.json",
-        ['query' => $mutation, 'variables' => $variables]
-    );
-
-    $body = $graphqlResponse->json();
-
-    Log::info('GraphQL response', [
-        'status' => $graphqlResponse->status(),
-        'body'   => $body,
-    ]);
-
-    if (!$graphqlResponse->ok()) {
-        throw new \Exception('GraphQL HTTP error: ' . $graphqlResponse->status() . ' - ' . substr($graphqlResponse->body(), 0, 300));
-    }
-
-    // Check for top-level GraphQL errors
-    if (!empty($body['errors'])) {
-        $errs = collect($body['errors'])->map(fn($e) => $e['message'] ?? json_encode($e))->implode('; ');
-        throw new \Exception("GraphQL errors: {$errs}");
-    }
-
-    $upsertData = $body['data']['themeFilesUpsert'] ?? [];
-    $userErrors = $upsertData['userErrors'] ?? [];
-    $uploaded   = $upsertData['upsertedThemeFiles'] ?? [];
-
-    if (!empty($userErrors)) {
-        $errMsg = collect($userErrors)->map(function ($e) {
-            $field = $e['field'] ?? '?';
-            if (is_array($field)) $field = implode('.', $field);
-            return "{$field}: " . ($e['message'] ?? '?') . " [" . ($e['code'] ?? '?') . "]";
-        })->implode('; ');
-
-        throw new \Exception("GraphQL userErrors: {$errMsg}");
-    }
-
-    if (empty($uploaded)) {
-        throw new \Exception('GraphQL returned no uploaded files');
-    }
-
-    Log::info('✅ Button uploaded successfully via GraphQL themeFilesUpsert', [
-        'theme_id'    => $themeId,
-        'shop'        => $shop,
-        'files'       => $uploaded,
+    Log::info('✅ Button injected into theme', [
+        'shop'           => $shop,
+        'theme_id'       => $result['theme_id'] ?? null,
+        'method'         => $result['method'] ?? null,
+        'include_status' => $result['include_status'] ?? null,
+        'include_asset'  => $result['include_asset'] ?? null,
     ]);
 }
   public function buildSnippet(int $storeId, string $appUrl, ?\App\Models\Store $store = null): string
